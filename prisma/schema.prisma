@@ -1,0 +1,365 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+}
+
+// ===== MULTI-TENANT CORE =====
+
+model Tenant {
+  id           String   @id @default(cuid())
+  name         String   // e.g., "TSHSS Punalur - UP Section"
+  code         String   @unique // e.g., "up_tshss", "hs_tshss"
+  schoolName   String   // e.g., "TSHSS Punalur"
+  section      String   // "UP" or "HS"
+  academicYear String   @default("2025-2026")
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  users                User[]
+  classes              Class[]
+  subjects             Subject[]
+  timetableEntries     TimetableEntry[]
+  substituteAssignments SubstituteAssignment[]
+  certificates         Certificate[]
+  messages             Message[]
+
+  @@map("tenants")
+}
+
+// ===== USER MANAGEMENT =====
+
+enum UserRole {
+  SUPER_ADMIN
+  SCHOOL_ADMIN
+  TEACHER
+  PARENT
+}
+
+model User {
+  id                 String   @id @default(cuid())
+  tenantId           String?  // null for SUPER_ADMIN
+  username           String   @unique
+  password           String   // bcrypt hashed
+  name               String
+  role               UserRole
+  email              String?
+  phone              String?
+  isActive           Boolean  @default(true)
+  mustChangePassword Boolean  @default(true)
+  createdById        String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  tenant    Tenant? @relation(fields: [tenantId], references: [id])
+  createdBy User?   @relation("UserCreatedBy", fields: [createdById], references: [id])
+  createdUsers User[] @relation("UserCreatedBy")
+
+  // Teacher-specific
+  teacher   Teacher?
+
+  // Parent-specific
+  student   Student?
+
+  // Feature access
+  featureAccess FeatureAccess[]
+
+  // Messages sent
+  messagesSent Message[] @relation("MessageSender")
+
+  // Attendance marked
+  attendanceMarked Attendance[] @relation("AttendanceMarker")
+
+  // Substitutions assigned by
+  substitutionsAssigned SubstituteAssignment[] @relation("SubstituteAssigner")
+
+  @@map("users")
+}
+
+model FeatureAccess {
+  id      String @id @default(cuid())
+  userId  String
+  feature String // e.g., "TIMETABLE", "ATTENDANCE", "RESULTS", "CERTIFICATES"
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, feature])
+  @@map("feature_access")
+}
+
+// ===== TEACHER =====
+
+model Teacher {
+  id          String  @id @default(cuid())
+  userId      String  @unique
+  teacherCode String  // e.g., "T001"
+  penNo       String? // PEN Number
+  designation String  // "UPSA" or "HSA"
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Subjects this teacher can teach
+  subjectMappings TeacherSubject[]
+
+  // Class teacher of
+  classTeacherOf Division?  @relation("ClassTeacher")
+
+  // Timetable entries
+  timetableEntries TimetableEntry[]
+
+  // Absent records
+  absentRecords    SubstituteAssignment[] @relation("AbsentTeacher")
+  substituteRecords SubstituteAssignment[] @relation("SubstituteTeacher")
+
+  // Certificates
+  certificates Certificate[]
+
+  @@unique([teacherCode])
+  @@map("teachers")
+}
+
+model TeacherSubject {
+  id        String @id @default(cuid())
+  teacherId String
+  subjectId String
+
+  teacher Teacher @relation(fields: [teacherId], references: [id], onDelete: Cascade)
+  subject Subject @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+
+  @@unique([teacherId, subjectId])
+  @@map("teacher_subjects")
+}
+
+// ===== CLASS STRUCTURE =====
+
+model Class {
+  id       String @id @default(cuid())
+  tenantId String
+  name     String // e.g., "5", "6", "7", "8", "9", "10"
+  order    Int    // for sorting
+
+  tenant   Tenant     @relation(fields: [tenantId], references: [id])
+  divisions Division[]
+
+  @@unique([tenantId, name])
+  @@map("classes")
+}
+
+model Division {
+  id              String @id @default(cuid())
+  classId         String
+  name            String // e.g., "A", "B", "C"
+  classTeacherId  String? @unique
+
+  class       Class    @relation(fields: [classId], references: [id], onDelete: Cascade)
+  classTeacher Teacher? @relation("ClassTeacher", fields: [classTeacherId], references: [id])
+
+  students         Student[]
+  timetableEntries TimetableEntry[]
+  divisionSubjects DivisionSubject[]
+  substituteAssignments SubstituteAssignment[]
+
+  @@unique([classId, name])
+  @@map("divisions")
+}
+
+// ===== SUBJECTS =====
+
+model Subject {
+  id               String  @id @default(cuid())
+  tenantId         String
+  name             String  // e.g., "Malayalam I", "English"
+  code             String  // e.g., "MAL1", "ENG"
+  periodsPerWeek   Int     @default(1)
+  isCore           Boolean @default(true)
+  eveningPriority  Boolean @default(false)
+  consecutiveSlots Int     @default(1) // 2 for IT Practical
+  isLanguageVariant Boolean @default(false) // true for Sanskrit, Arabic, Urdu
+  replacesSubjectId String? // ID of subject it replaces (e.g., Malayalam I)
+
+  tenant          Tenant   @relation(fields: [tenantId], references: [id])
+  replacesSubject Subject? @relation("LanguageVariant", fields: [replacesSubjectId], references: [id])
+  variants        Subject[] @relation("LanguageVariant")
+
+  teacherMappings  TeacherSubject[]
+  timetableEntries TimetableEntry[]
+  divisionSubjects DivisionSubject[]
+  examResults      ExamResult[]
+
+  @@unique([tenantId, code])
+  @@map("subjects")
+}
+
+// Division-specific subject configuration
+model DivisionSubject {
+  id               String  @id @default(cuid())
+  divisionId       String
+  subjectId        String
+  useLanguageVariant Boolean @default(false) // if true, some students use variant
+  languageVariantSubjectId String? // which variant subject
+
+  division Division @relation(fields: [divisionId], references: [id], onDelete: Cascade)
+  subject  Subject  @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+
+  @@unique([divisionId, subjectId])
+  @@map("division_subjects")
+}
+
+// ===== TIMETABLE =====
+
+model TimetableEntry {
+  id         String @id @default(cuid())
+  tenantId   String
+  divisionId String
+  dayOfWeek  Int    // 1=Monday, 2=Tuesday, ..., 6=Saturday
+  slotNumber Int    // 1-7
+  subjectId  String
+  teacherId  String
+
+  tenant   Tenant   @relation(fields: [tenantId], references: [id])
+  division Division @relation(fields: [divisionId], references: [id], onDelete: Cascade)
+  subject  Subject  @relation(fields: [subjectId], references: [id])
+  teacher  Teacher  @relation(fields: [teacherId], references: [id])
+
+  @@unique([divisionId, dayOfWeek, slotNumber])
+  @@index([tenantId, dayOfWeek])
+  @@index([teacherId, dayOfWeek])
+  @@map("timetable_entries")
+}
+
+// ===== SUBSTITUTE =====
+
+model SubstituteAssignment {
+  id                  String @id @default(cuid())
+  tenantId            String
+  date                DateTime @db.Date
+  absentTeacherId     String
+  originalSlotNumber  Int
+  originalDivisionId  String
+  substituteTeacherId String
+  assignedById        String
+  createdAt           DateTime @default(now())
+
+  tenant            Tenant   @relation(fields: [tenantId], references: [id])
+  absentTeacher     Teacher  @relation("AbsentTeacher", fields: [absentTeacherId], references: [id])
+  originalDivision  Division @relation(fields: [originalDivisionId], references: [id])
+  substituteTeacher Teacher  @relation("SubstituteTeacher", fields: [substituteTeacherId], references: [id])
+  assignedBy        User     @relation("SubstituteAssigner", fields: [assignedById], references: [id])
+
+  @@unique([date, originalDivisionId, originalSlotNumber])
+  @@map("substitute_assignments")
+}
+
+// ===== STUDENTS =====
+
+model Student {
+  id         String  @id @default(cuid())
+  userId     String  @unique // parent account
+  divisionId String
+  rollNumber Int
+  name       String
+  parentName String?
+  parentPhone String?
+
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  division Division @relation(fields: [divisionId], references: [id])
+
+  attendance  Attendance[]
+  examResults ExamResult[]
+
+  @@unique([divisionId, rollNumber])
+  @@map("students")
+}
+
+// ===== ATTENDANCE =====
+
+model Attendance {
+  id        String   @id @default(cuid())
+  studentId String
+  date      DateTime @db.Date
+  isPresent Boolean  @default(true)
+  markedById String
+
+  student  Student @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  markedBy User    @relation("AttendanceMarker", fields: [markedById], references: [id])
+
+  @@unique([studentId, date])
+  @@map("attendance")
+}
+
+// ===== EXAM RESULTS =====
+
+model ExamResult {
+  id        String  @id @default(cuid())
+  studentId String
+  subjectId String
+  examName  String  // e.g., "First Term", "Mid Term"
+  marks     Float?
+  grade     String?
+  maxMarks  Float   @default(100)
+  createdAt DateTime @default(now())
+
+  student Student @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  subject Subject @relation(fields: [subjectId], references: [id])
+
+  @@unique([studentId, subjectId, examName])
+  @@map("exam_results")
+}
+
+// ===== MESSAGES =====
+
+model Message {
+  id          String   @id @default(cuid())
+  tenantId    String
+  senderId    String
+  content     String
+  targetType  String   // "CLASS", "ALL_TEACHERS", "ALL_PARENTS", "ALL"
+  targetClassDivisionId String? // if targetType is "CLASS"
+  isRead      Boolean  @default(false)
+  attachments String[] // file URLs
+  createdAt   DateTime @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+  sender User   @relation("MessageSender", fields: [senderId], references: [id])
+
+  recipients MessageRecipient[]
+
+  @@map("messages")
+}
+
+model MessageRecipient {
+  id        String  @id @default(cuid())
+  messageId String
+  userId    String
+  isRead    Boolean @default(false)
+
+  message Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@unique([messageId, userId])
+  @@map("message_recipients")
+}
+
+// ===== CERTIFICATES =====
+
+model Certificate {
+  id             String   @id @default(cuid())
+  tenantId       String
+  type           String   // "COVER_LETTER", "RELIEVING_ORDER", "DUTY_CERTIFICATE"
+  generatedForId String   // teacher ID
+  content        String   @db.Text
+  attachments    String[] // uploaded document URLs
+  metadata       Json?    // additional data
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  tenant       Tenant  @relation(fields: [tenantId], references: [id])
+  generatedFor Teacher @relation(fields: [generatedForId], references: [id])
+
+  @@map("certificates")
+}
