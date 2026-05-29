@@ -3,7 +3,7 @@
  *
  * Three-stage hybrid pipeline:
  *   Stage 1 — Constraint Propagation + MRV Greedy Fill (initial feasible solution)
- *   Stage 2 — Simulated Annealing Optimization (5 passes × 40 000 iterations)
+ *   Stage 2 — Simulated Annealing Optimization (8 passes × 80 000 iterations)
  *   Stage 3 — Targeted gap repair (external, via Gemini AI — handled by caller)
  *
  * Hard constraints (always enforced — moves that violate are rejected):
@@ -13,14 +13,15 @@
  *   H4  Fixed placements:         fixedDay / fixedSlot subjects are pinned
  *
  * Soft constraints (scored on an 8-dimension quality metric, 0–100):
- *   S1  Fill rate               — 40 pts
- *   S2  Subject-day uniqueness  — 12 pts
- *   S3  Subject-week spread     —  8 pts
- *   S4  Core-morning preference —  8 pts
- *   S5  Evening-priority pref.  —  5 pts
- *   S6  Teacher load balance    — 10 pts
- *   S7  Class-teacher Period 1  — 12 pts
- *   S8  Consecutive compliance  —  5 pts
+ *   S1  Fill rate               — 35 pts
+ *   S2  Subject-day uniqueness  — 10 pts
+ *   S3  Subject-week spread     —  6 pts
+ *   S4  Core-morning preference —  7 pts
+ *   S5  Evening-priority pref.  —  4 pts
+ *   S6  Teacher load balance    —  8 pts
+ *   S7  Class-teacher Period 1  — 18 pts  ← highest priority soft constraint
+ *   S8  Consecutive compliance  —  4 pts
+ *   S9  No teacher hat-trick    —  8 pts
  */
 
 import type {
@@ -91,22 +92,23 @@ interface SolverConfig {
 //  SA CONSTANTS
 // ═════════════════════════════════════════════════════════════════════════════
 
-const SA_PASSES         = 5;
-const SA_ITERATIONS     = 40_000;
-const SA_T_START        = 5.0;
-const SA_T_MIN          = 0.001;
-const SA_REHEAT_STALL   = 5_000;   // reheat if no improvement for N iterations
-const SA_REHEAT_FACTOR  = 3;       // multiply temp by this on reheat
+const SA_PASSES         = 10;
+const SA_ITERATIONS     = 100_000;
+const SA_T_START        = 8.0;
+const SA_T_MIN          = 0.0005;
+const SA_REHEAT_STALL   = 6_000;   // reheat if no improvement for N iterations
+const SA_REHEAT_FACTOR  = 4;       // multiply temp by this on reheat
 
 // Score weights (must sum to 100)
-const W_FILL            = 40;
-const W_DAY_UNIQUE      = 12;
-const W_WEEK_SPREAD     =  8;
-const W_CORE_MORNING    =  8;
-const W_EVENING         =  5;
-const W_TEACHER_BAL     = 10;
-const W_CT_P1           = 12;
-const W_CONSECUTIVE     =  5;
+const W_FILL            = 35;
+const W_DAY_UNIQUE      = 10;
+const W_WEEK_SPREAD     =  6;
+const W_CORE_MORNING    =  7;
+const W_EVENING         =  4;
+const W_TEACHER_BAL     =  8;
+const W_CT_P1           = 18;  // ← heavily boosted: CT must own Period 1
+const W_CONSECUTIVE     =  4;
+const W_NO_TEACHER_HAT  =  8;  // penalise same teacher 3+ consecutive slots
 
 // ═════════════════════════════════════════════════════════════════════════════
 //  STATE CLASS — mutable with O(1) assign / unassign / constraint checks
@@ -126,6 +128,7 @@ class State {
   tLoad: Map<string, number>;         // teacherId → total assigned slots
 
   assignedCount: number;
+  divisionCTs: Map<string, string>;   // divisionId → classTeacherId cache
 
   constructor(vars: Variable[], cfg: SolverConfig) {
     this.vars = vars;
@@ -136,6 +139,14 @@ class State {
     this.sdCount     = new Map();
     this.tLoad       = new Map();
     this.assignedCount = 0;
+
+    // Cache division CTs
+    this.divisionCTs = new Map();
+    for (const v of vars) {
+      if (v.classTeacherId) {
+        this.divisionCTs.set(v.divisionId, v.classTeacherId);
+      }
+    }
   }
 
   // ── Queries ──────────────────────────────────────────────────────────────
@@ -287,7 +298,7 @@ function computeDomain(v: Variable, cfg: SolverConfig): Assignment[] {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-//  SCORING FUNCTION — 8 weighted dimensions, total 0–100
+//  SCORING FUNCTION — 9 weighted dimensions, total 0–100
 // ═════════════════════════════════════════════════════════════════════════════
 
 function computeScore(state: State): ScoreBreakdown {
@@ -299,7 +310,6 @@ function computeScore(state: State): ScoreBreakdown {
   const fillRate = state.assignedCount / N;
 
   // ── S2: Subject-day uniqueness ───────────────────────────────────────────
-  // Count how many (div, subject, day) triples have count > 1 (violations)
   let totalDivSubjectDays = 0;
   let uniqueViolations = 0;
   for (const c of sdCount.values()) {
@@ -311,9 +321,7 @@ function computeScore(state: State): ScoreBreakdown {
     : 1;
 
   // ── S3: Subject-week spread ──────────────────────────────────────────────
-  // For each (division, subject), how evenly are assigned days spread?
-  // Measure: for subjects with ≥3 periods, compute stddev of day-gap.
-  const divSubjectDays: Map<string, number[]> = new Map(); // "div:sub" → sorted days
+  const divSubjectDays: Map<string, number[]> = new Map();
   for (let i = 0; i < N; i++) {
     const a = asgn[i];
     if (!a) continue;
@@ -325,7 +333,6 @@ function computeScore(state: State): ScoreBreakdown {
   for (const [, days] of divSubjectDays) {
     if (days.length < 2) { spreadTotal += 1; spreadCount++; continue; }
     days.sort((a, b) => a - b);
-    // Ideal gap = numDays / numPeriods. Actual gaps vary.
     const idealGap = cfg.days / days.length;
     let gapDeviation = 0;
     for (let j = 1; j < days.length; j++) {
@@ -365,18 +372,14 @@ function computeScore(state: State): ScoreBreakdown {
   if (loads.length > 1) {
     const mean = loads.reduce((a, b) => a + b, 0) / loads.length;
     const variance = loads.reduce((s, l) => s + (l - mean) ** 2, 0) / loads.length;
-    const cv = mean > 0 ? Math.sqrt(variance) / mean : 0; // coefficient of variation
+    const cv = mean > 0 ? Math.sqrt(variance) / mean : 0;
     balanceScore = Math.max(0, 1 - cv);
   }
 
-  // ── S7: Class-teacher Period 1 ───────────────────────────────────────────
+  // ── S7: Class-teacher Period 1 (HEAVILY WEIGHTED) ────────────────────────
   // For each division with a class teacher, count days where CT teaches slot 1
-  const divisionCTs: Map<string, string> = new Map(); // divId → classTeacherId
-  for (const v of vars) {
-    if (v.classTeacherId) divisionCTs.set(v.divisionId, v.classTeacherId);
-  }
   let ctDays = 0, ctP1Days = 0;
-  for (const [divId, ctId] of divisionCTs) {
+  for (const [divId, ctId] of state.divisionCTs) {
     for (let d = 1; d <= cfg.days; d++) {
       ctDays++;
       const key = `${divId}:${d}:1`;
@@ -393,20 +396,45 @@ function computeScore(state: State): ScoreBreakdown {
   for (let i = 0; i < N; i++) {
     if (vars[i].blockSize <= 1) continue;
     consTotal++;
-    if (asgn[i]) consOk++; // if assigned, it's valid (canPlace enforces validity)
+    if (asgn[i]) consOk++;
   }
   const consScore = consTotal > 0 ? consOk / consTotal : 1;
 
+  // ── S9: No teacher hat-trick (same teacher ≥3 consecutive in a division) ─
+  let hatTrickSlots = 0, hatTrickViolations = 0;
+  for (const [divId] of state.divisionCTs) {
+    for (let d = 1; d <= cfg.days; d++) {
+      let runLen = 0;
+      let lastTeacher = '';
+      for (let s = 1; s <= cfg.slotsPerDay; s++) {
+        const occ = state.divGrid.get(`${divId}:${d}:${s}`);
+        const tid = occ !== undefined ? vars[occ].teacherId : '';
+        if (tid && tid === lastTeacher) {
+          runLen++;
+          if (runLen >= 3) hatTrickViolations++;
+        } else {
+          runLen = 1;
+          lastTeacher = tid;
+        }
+        hatTrickSlots++;
+      }
+    }
+  }
+  const hatTrickScore = hatTrickSlots > 0
+    ? Math.max(0, 1 - hatTrickViolations / (hatTrickSlots * 0.1))
+    : 1;
+
   // ── Weighted total ───────────────────────────────────────────────────────
   const total =
-    W_FILL         * fillRate         +
-    W_DAY_UNIQUE   * dayUniqueScore   +
-    W_WEEK_SPREAD  * weekSpreadScore  +
-    W_CORE_MORNING * coreMorningScore +
-    W_EVENING      * eveningScore     +
-    W_TEACHER_BAL  * balanceScore     +
-    W_CT_P1        * ctP1Score        +
-    W_CONSECUTIVE  * consScore;
+    W_FILL            * fillRate         +
+    W_DAY_UNIQUE      * dayUniqueScore   +
+    W_WEEK_SPREAD     * weekSpreadScore  +
+    W_CORE_MORNING    * coreMorningScore +
+    W_EVENING         * eveningScore     +
+    W_TEACHER_BAL     * balanceScore     +
+    W_CT_P1           * ctP1Score        +
+    W_CONSECUTIVE     * consScore        +
+    W_NO_TEACHER_HAT  * hatTrickScore;
 
   return {
     total,
@@ -434,27 +462,85 @@ function emptyScore(): ScoreBreakdown {
 // ═════════════════════════════════════════════════════════════════════════════
 
 /**
- * Build an initial feasible solution using the Minimum-Remaining-Values
- * heuristic: always assign the most constrained variable first.
+ * Build an initial feasible solution using:
+ *   Phase A — Dedicated Class-Teacher Period 1 placement
+ *   Phase B — MRV Greedy Fill for everything else
  */
 function buildInitialSolution(state: State): void {
   const { vars, cfg } = state;
 
-  // Compute static domains for all variables
+  // ══ Phase A: Class-Teacher Period 1 placement (guaranteed) ═══════════════
+  // For each division, find all variables taught by the class teacher
+  // and pin exactly one to slot 1 for each day of the week.
+  for (const [divId, ctId] of state.divisionCTs) {
+    // Collect all CT-taught variables for this division, unassigned, blockSize <= 2
+    const ctVars = vars
+      .filter(v =>
+        v.divisionId === divId &&
+        v.teacherId === ctId &&
+        v.blockSize <= 2 &&
+        v.fixedDay === null &&
+        v.fixedSlot === null &&
+        !state.asgn[v.idx]
+      )
+      .map(v => v.idx);
+
+    if (ctVars.length === 0) continue;
+
+    // Try to assign one CT variable to slot 1 for each day
+    let ctPool = [...ctVars];
+    for (let d = 1; d <= cfg.days; d++) {
+      if (ctPool.length === 0) break;
+
+      // Pick the CT variable that would best fill slot 1 today
+      // Prefer one whose subject hasn't been placed on this day yet and is a single slot
+      let bestVi = -1;
+      let bestS = -Infinity;
+      for (const vi of ctPool) {
+        const v = vars[vi];
+        if (!state.canPlace(v, d, 1)) continue;
+
+        let s = 0;
+        const sdKey = `${v.divisionId}:${v.subjectId}:${d}`;
+        if ((state.sdCount.get(sdKey) ?? 0) === 0) s += 10;
+        if (v.isCore) s += 3;
+        if (v.blockSize === 1) s += 5; // prefer single periods in Period 1
+
+        if (s > bestS) {
+          bestS = s;
+          bestVi = vi;
+        }
+      }
+
+      if (bestVi !== -1) {
+        state.place(bestVi, d, 1);
+        ctPool = ctPool.filter(vi => vi !== bestVi);
+      }
+    }
+  }
+
+  // ══ Phase B: MRV Greedy Fill for remaining variables ═════════════════════
   const domains: Assignment[][] = vars.map(v => computeDomain(v, cfg));
 
   // Build priority ordering:
   //  1. Fixed-placement variables (smallest domain) first
-  //  2. Variables whose teacher is very busy (fewer free slots)
-  //  3. Consecutive-block variables before singles
-  //  4. Higher periodsPerWeek first (more constrained)
-  const order = vars.map((_, i) => i);
+  //  2. CT variables that still need placement (high priority)
+  //  3. Smaller domain = more constrained = earlier
+  //  4. Consecutive-block variables before singles
+  const order = vars
+    .filter(v => !state.asgn[v.idx]) // Skip already-placed CT-P1 vars
+    .map(v => v.idx);
+
   order.sort((a, b) => {
     const va = vars[a], vb = vars[b];
     // Fixed-placement gets highest priority
     const fixedA = (va.fixedDay !== null || va.fixedSlot !== null) ? 0 : 1;
     const fixedB = (vb.fixedDay !== null || vb.fixedSlot !== null) ? 0 : 1;
     if (fixedA !== fixedB) return fixedA - fixedB;
+    // CT-taught subjects get priority (so CT has more slots to choose from)
+    const ctA = va.teacherId === va.classTeacherId ? 0 : 1;
+    const ctB = vb.teacherId === vb.classTeacherId ? 0 : 1;
+    if (ctA !== ctB) return ctA - ctB;
     // Smaller domain = more constrained = earlier
     const da = domains[a].length, db = domains[b].length;
     if (da !== db) return da - db;
@@ -479,19 +565,22 @@ function buildInitialSolution(state: State): void {
     for (const val of valid) {
       let score = 0;
 
-      // Prefer unique subject-day
+      // Prefer unique subject-day (strong preference)
       const sdKey = `${v.divisionId}:${v.subjectId}:${val.day}`;
       const existing = state.sdCount.get(sdKey) ?? 0;
-      if (existing === 0) score += 10;
-      else score -= 5 * existing;
+      if (existing === 0) score += 12;
+      else score -= 6 * existing;
 
       // Core subjects prefer morning
-      if (v.isCore && !v.eveningPriority && val.slot <= cfg.morningPeriods) score += 4;
+      if (v.isCore && !v.eveningPriority && val.slot <= cfg.morningPeriods) score += 5;
       // Evening-priority subjects prefer afternoon
-      if (v.eveningPriority && val.slot > cfg.morningPeriods) score += 4;
+      if (v.eveningPriority && val.slot > cfg.morningPeriods) score += 5;
 
-      // Class-teacher subjects prefer slot 1
-      if (v.teacherId === v.classTeacherId && val.slot === 1) score += 8;
+      // Class-teacher subjects STRONGLY prefer slot 1 (even for non-Phase-A vars)
+      if (v.teacherId === v.classTeacherId && val.slot === 1) score += 20;
+      // Also give slight preference to slot 1 even for non-CT (preserves CT-P1)
+      // by penalizing CT-taught vars going to slot 1 in other divisions
+      if (v.teacherId !== v.classTeacherId && val.slot === 1) score -= 2;
 
       // Prefer lower teacher load on this day (spread load)
       let tDayLoad = 0;
@@ -632,7 +721,8 @@ function tryFill(state: State): { applied: boolean; vi: number } | null {
     if ((state.sdCount.get(sdKey) ?? 0) === 0) s += 8;
     if (v.isCore && !v.eveningPriority && val.slot <= state.cfg.morningPeriods) s += 3;
     if (v.eveningPriority && val.slot > state.cfg.morningPeriods) s += 3;
-    if (v.teacherId === v.classTeacherId && val.slot === 1) s += 6;
+    // Heavily prefer slot 1 for class-teacher subjects
+    if (v.teacherId === v.classTeacherId && val.slot === 1) s += 20;
     if (s > bestS) { bestS = s; best = val; }
   }
 
@@ -705,6 +795,143 @@ function tryEjectFill(state: State): {
   return { applied: false };
 }
 
+/**
+ * MOVE_CT_TO_P1: Selects a division, day, and moves or swaps a Class Teacher to slot 1.
+ */
+function tryMoveCTToP1(state: State): {
+  applied: boolean;
+  vi1?: number; // the CT variable moved to P1
+  oldA1?: Assignment;
+  vi2?: number; // the variable previously at P1 that was moved/ejected
+  oldA2?: Assignment;
+  isSwap?: boolean;
+} | null {
+  const { vars, cfg } = state;
+
+  if (state.divisionCTs.size === 0) return null;
+
+  const divIds = Array.from(state.divisionCTs.keys());
+  const divId = divIds[randInt(divIds.length)];
+  const ctId = state.divisionCTs.get(divId)!;
+
+  // Pick a random day
+  const d = 1 + randInt(cfg.days);
+
+  // Check occupant of slot 1 on this day
+  const p1Key = `${divId}:${d}:1`;
+  const occupantVi = state.divGrid.get(p1Key);
+
+  if (occupantVi !== undefined && vars[occupantVi].teacherId === ctId) {
+    // Already Class Teacher at P1 on this day
+    return null;
+  }
+
+  // Find all CT-taught variables for this division (blockSize <= 2)
+  const ctVars = vars.filter(v =>
+    v.divisionId === divId &&
+    v.teacherId === ctId &&
+    v.blockSize <= 2 &&
+    v.fixedDay === null &&
+    v.fixedSlot === null
+  );
+  if (ctVars.length === 0) return null;
+
+  // Pick one CT variable to place in P1.
+  // Preferably one that is currently assigned elsewhere (to move it), or unassigned (to fill it).
+  shuffleArray(ctVars);
+  const targetV = ctVars.find(v => {
+    const a = state.asgn[v.idx];
+    return !a || a.slot !== 1;
+  });
+  if (!targetV) return null;
+
+  const vi1 = targetV.idx;
+  const oldA1 = state.asgn[vi1]; // might be undefined
+
+  // We want to place targetV at (d, 1).
+  // First, check if CT is free at (d, 1) or if CT is only busy with targetV itself.
+  if (oldA1) state.remove(vi1);
+
+  const isCTFreeAtP1 = state.teacherFree(ctId, d, 1);
+  if (!isCTFreeAtP1) {
+    if (oldA1) state.place(vi1, oldA1.day, oldA1.slot); // restore
+    return null;
+  }
+
+  // Now, what about the occupant of (d, 1)?
+  if (occupantVi === undefined) {
+    // P1 is completely free!
+    if (state.canPlace(targetV, d, 1)) {
+      state.place(vi1, d, 1);
+      return {
+        applied: true,
+        vi1,
+        oldA1,
+      };
+    } else {
+      if (oldA1) state.place(vi1, oldA1.day, oldA1.slot); // restore
+      return null;
+    }
+  } else {
+    // P1 is occupied by occupantVi.
+    const v2 = vars[occupantVi];
+    if (v2.fixedDay !== null || v2.fixedSlot !== null) {
+      // Cannot move a fixed variable
+      if (oldA1) state.place(vi1, oldA1.day, oldA1.slot);
+      return null;
+    }
+
+    // Try to SWAP: place targetV at (d, 1) and occupantVi at targetV's old position (oldA1)
+    const oldA2 = state.asgn[occupantVi]!;
+    state.remove(occupantVi);
+
+    if (oldA1) {
+      // Try to place targetV at (d, 1) and occupantVi at oldA1
+      if (state.canPlace(targetV, d, 1) && state.canPlace(v2, oldA1.day, oldA1.slot)) {
+        state.place(vi1, d, 1);
+        if (state.canPlace(v2, oldA1.day, oldA1.slot)) {
+          state.place(occupantVi, oldA1.day, oldA1.slot);
+          return {
+            applied: true,
+            vi1,
+            oldA1,
+            vi2: occupantVi,
+            oldA2,
+            isSwap: true,
+          };
+        }
+        state.remove(vi1);
+      }
+    } else {
+      // EJECT+FILL style: targetV was unassigned. We place targetV at (d, 1), and then try to move occupantVi to any other valid slot.
+      if (state.canPlace(targetV, d, 1)) {
+        state.place(vi1, d, 1);
+
+        const v2Domain = computeDomain(v2, state.cfg);
+        const v2Valid = v2Domain.filter(a => (a.day !== oldA2.day || a.slot !== oldA2.slot) && state.canPlace(v2, a.day, a.slot));
+        if (v2Valid.length > 0) {
+          const newA2 = v2Valid[randInt(v2Valid.length)];
+          state.place(occupantVi, newA2.day, newA2.slot);
+          return {
+            applied: true,
+            vi1,
+            oldA1: undefined,
+            vi2: occupantVi,
+            oldA2,
+            isSwap: false,
+          };
+        }
+        state.remove(vi1);
+      }
+    }
+
+    // Restore both
+    state.place(occupantVi, oldA2.day, oldA2.slot);
+    if (oldA1) state.place(vi1, oldA1.day, oldA1.slot);
+    return null;
+  }
+}
+
 // ═════════════════════════════════════════════════════════════════════════════
 //  SIMULATED ANNEALING — Main Loop
 // ═════════════════════════════════════════════════════════════════════════════
@@ -726,7 +953,24 @@ function runSAPass(state: State, iterations: number): { score: number; improved:
     let moveApplied = false;
     let undoFn: (() => void) | null = null;
 
-    if (fillRate < 1 && r < 0.35) {
+    if (r < 0.15) {
+      // MOVE_CT_TO_P1 — target Class Teacher for Period 1
+      const result = tryMoveCTToP1(state);
+      if (result?.applied) {
+        moveApplied = true;
+        const { vi1, oldA1, vi2, oldA2 } = result;
+        undoFn = () => {
+          state.remove(vi1!);
+          if (vi2 !== undefined) {
+            state.remove(vi2);
+            state.place(vi2, oldA2!.day, oldA2!.slot);
+          }
+          if (oldA1) {
+            state.place(vi1!, oldA1.day, oldA1.slot);
+          }
+        };
+      }
+    } else if (fillRate < 1 && r < 0.45) {
       // FILL — try to assign unassigned variables
       const result = tryFill(state);
       if (result?.applied) {
@@ -734,7 +978,7 @@ function runSAPass(state: State, iterations: number): { score: number; improved:
         const capturedVi = result.vi;
         undoFn = () => undoFill(state, capturedVi);
       }
-    } else if (fillRate < 1 && r < 0.50) {
+    } else if (fillRate < 1 && r < 0.55) {
       // EJECT+FILL — eject to make room
       const result = tryEjectFill(state);
       if (result?.applied && result.ejected && result.filled !== undefined) {
@@ -748,7 +992,7 @@ function runSAPass(state: State, iterations: number): { score: number; improved:
           state.place(ej.vi, ej.oldA.day, ej.oldA.slot);
         };
       }
-    } else if (r < (fillRate < 1 ? 0.75 : 0.50)) {
+    } else if (r < (fillRate < 1 ? 0.78 : 0.58)) {
       // SWAP — exchange two entries in same division
       const result = trySwap(state);
       if (result?.applied) {
