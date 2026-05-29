@@ -31,7 +31,11 @@ export async function POST(req: NextRequest) {
   }
 
   const body = await req.json();
-  const { name, code, periodsPerWeek, isCore, eveningPriority, consecutiveSlots, isLanguageVariant, replacesSubjectId } = body;
+  const {
+    name, code, periodsPerWeek, isCore, eveningPriority, consecutiveSlots,
+    isLanguageVariant, replacesSubjectId,
+    fixedDay, fixedSlot, useClassTeacher,
+  } = body;
 
   if (!name || !code) {
     return NextResponse.json({ error: 'Name and code are required' }, { status: 400 });
@@ -48,10 +52,55 @@ export async function POST(req: NextRequest) {
       consecutiveSlots: consecutiveSlots || 1,
       isLanguageVariant: isLanguageVariant ?? false,
       replacesSubjectId: replacesSubjectId || null,
+      fixedDay: fixedDay ?? null,
+      fixedSlot: fixedSlot ?? null,
+      useClassTeacher: useClassTeacher ?? false,
     },
   });
 
   return NextResponse.json({ success: true, data: subject }, { status: 201 });
+}
+
+// PATCH update subject
+export async function PATCH(req: NextRequest) {
+  const session = await getServerSession(authOptions);
+  if (!session || session.user.role !== 'SCHOOL_ADMIN' || !session.user.tenantId) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 403 });
+  }
+
+  const body = await req.json();
+  const {
+    id, name, code, periodsPerWeek, isCore, eveningPriority, consecutiveSlots,
+    isLanguageVariant, replacesSubjectId,
+    fixedDay, fixedSlot, useClassTeacher,
+  } = body;
+
+  if (!id) return NextResponse.json({ error: 'Subject ID is required' }, { status: 400 });
+  if (!name || !code) return NextResponse.json({ error: 'Name and code are required' }, { status: 400 });
+
+  const existing = await prisma.subject.findFirst({
+    where: { id, tenantId: session.user.tenantId },
+  });
+  if (!existing) return NextResponse.json({ error: 'Subject not found' }, { status: 404 });
+
+  const subject = await prisma.subject.update({
+    where: { id },
+    data: {
+      name,
+      code,
+      periodsPerWeek: periodsPerWeek ?? existing.periodsPerWeek,
+      isCore: isCore ?? existing.isCore,
+      eveningPriority: eveningPriority ?? existing.eveningPriority,
+      consecutiveSlots: consecutiveSlots ?? existing.consecutiveSlots,
+      isLanguageVariant: isLanguageVariant ?? existing.isLanguageVariant,
+      replacesSubjectId: replacesSubjectId || null,
+      fixedDay: fixedDay !== undefined ? (fixedDay || null) : existing.fixedDay,
+      fixedSlot: fixedSlot !== undefined ? (fixedSlot || null) : existing.fixedSlot,
+      useClassTeacher: useClassTeacher ?? existing.useClassTeacher,
+    },
+  });
+
+  return NextResponse.json({ success: true, data: subject });
 }
 
 // DELETE subject

@@ -4,17 +4,20 @@ import { useEffect, useState, useRef } from 'react';
 import DashboardLayout from '@/components/DashboardLayout';
 import { downloadExcel, parseExcel } from '@/lib/excel';
 
+const EMPTY_FORM = { rollNumber: '', name: '', parentName: '', parentPhone: '' };
+
 export default function StudentsPage() {
   const [classes, setClasses] = useState<any[]>([]);
   const [students, setStudents] = useState<any[]>([]);
   const [selectedDiv, setSelectedDiv] = useState('');
   const [showModal, setShowModal] = useState(false);
+  const [editingStudent, setEditingStudent] = useState<any | null>(null);
   const [loading, setLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [message, setMessage] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [genInfo, setGenInfo] = useState<any>(null);
-  const [form, setForm] = useState({ rollNumber: '', name: '', parentName: '', parentPhone: '' });
+  const [form, setForm] = useState({ ...EMPTY_FORM });
 
   const [showPwdModal, setShowPwdModal] = useState(false);
   const [pwdTarget, setPwdTarget] = useState<any>(null);
@@ -35,19 +38,57 @@ export default function StudentsPage() {
     if (data.success) setStudents(data.data);
   }
 
-  async function createStudent(e: React.FormEvent) {
+  function openAddModal() {
+    setEditingStudent(null);
+    setGenInfo(null);
+    setForm({ ...EMPTY_FORM });
+    setShowModal(true);
+  }
+
+  function openEditModal(s: any) {
+    setEditingStudent(s);
+    setGenInfo(null);
+    setForm({
+      rollNumber: String(s.rollNumber),
+      name: s.name,
+      parentName: s.parentName || '',
+      parentPhone: s.parentPhone || '',
+    });
+    setShowModal(true);
+  }
+
+  async function saveStudent(e: React.FormEvent) {
     e.preventDefault();
     setLoading(true);
-    const res = await fetch('/api/students', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...form, divisionId: selectedDiv }),
-    });
-    const data = await res.json();
-    if (data.success) {
-      setGenInfo({ username: data.data.username, password: data.data.generatedPassword });
-      setForm({ rollNumber: '', name: '', parentName: '', parentPhone: '' });
-      fetchStudents();
+
+    if (editingStudent) {
+      const res = await fetch('/api/students', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: editingStudent.id, ...form }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setShowModal(false);
+        setMessage(`✓ ${form.name} updated successfully.`);
+        fetchStudents();
+      } else {
+        setMessage(`Error: ${data.error || 'Update failed'}`);
+      }
+    } else {
+      const res = await fetch('/api/students', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...form, divisionId: selectedDiv }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setGenInfo({ username: data.data.username, password: data.data.generatedPassword });
+        setForm({ ...EMPTY_FORM });
+        fetchStudents();
+      } else {
+        setMessage(`Error: ${data.error || 'Creation failed'}`);
+      }
     }
     setLoading(false);
   }
@@ -75,21 +116,10 @@ export default function StudentsPage() {
     if (data.success) fetchStudents();
   }
 
-
   function handleDownloadTemplate() {
     const sampleData = [
-      {
-        'Roll Number': 1,
-        'Name': 'Rahul S',
-        'Parent Name': 'Suresh Kumar',
-        'Parent Phone': '9876543210'
-      },
-      {
-        'Roll Number': 2,
-        'Name': 'Sneha M',
-        'Parent Name': 'Mohan Das',
-        'Parent Phone': '9876543211'
-      }
+      { 'Roll Number': 1, 'Name': 'Rahul S', 'Parent Name': 'Suresh Kumar', 'Parent Phone': '9876543210' },
+      { 'Roll Number': 2, 'Name': 'Sneha M', 'Parent Name': 'Mohan Das', 'Parent Phone': '9876543211' }
     ];
     downloadExcel(sampleData, 'students_template', 'Students');
   }
@@ -97,42 +127,26 @@ export default function StudentsPage() {
   async function handleUploadExcel(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file || !selectedDiv) return;
-
     setUploading(true);
     setMessage('');
     try {
       const parsedData = await parseExcel(file);
-      if (parsedData.length === 0) {
-        setMessage('No data found in Excel file.');
-        setUploading(false);
-        return;
-      }
-
-      let successCount = 0;
-      let failCount = 0;
-
+      if (parsedData.length === 0) { setMessage('No data found in Excel file.'); setUploading(false); return; }
+      let successCount = 0, failCount = 0;
       for (const row of parsedData) {
-        const rollNumber = parseInt(row['Roll Number'] || '1');
-        const name = row['Name'];
-        const parentName = row['Parent Name'] || '';
-        const parentPhone = String(row['Parent Phone'] || '');
-
         const res = await fetch('/api/students', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            rollNumber, name, parentName, parentPhone, divisionId: selectedDiv
+            rollNumber: parseInt(row['Roll Number'] || '1'),
+            name: row['Name'],
+            parentName: row['Parent Name'] || '',
+            parentPhone: String(row['Parent Phone'] || ''),
+            divisionId: selectedDiv
           }),
         });
-
-        const status = await res.json();
-        if (status.success) {
-          successCount++;
-        } else {
-          failCount++;
-        }
+        (await res.json()).success ? successCount++ : failCount++;
       }
-
       setMessage(`Uploaded successfully! Created: ${successCount}, Failed: ${failCount}`);
       fetchStudents();
     } catch (err: any) {
@@ -158,30 +172,22 @@ export default function StudentsPage() {
           </select>
           {selectedDiv && (
             <>
-              <button className="btn btn-secondary" onClick={handleDownloadTemplate}>
-                Download Template
-              </button>
+              <button className="btn btn-secondary" onClick={handleDownloadTemplate}>Download Template</button>
               <button className="btn btn-secondary" onClick={() => fileInputRef.current?.click()} disabled={uploading}>
                 {uploading ? 'Uploading...' : 'Upload Excel'}
               </button>
-              <input
-                type="file"
-                ref={fileInputRef}
-                style={{ display: 'none' }}
-                accept=".xlsx"
-                onChange={handleUploadExcel}
-              />
-              <button className="btn btn-primary" onClick={() => { setShowModal(true); setGenInfo(null); }}>
-                Add Student
-              </button>
+              <input type="file" ref={fileInputRef} style={{ display: 'none' }} accept=".xlsx" onChange={handleUploadExcel} />
+              <button className="btn btn-primary" onClick={openAddModal}>+ Add Student</button>
             </>
           )}
         </div>
       </div>
       <div className="page-body">
         {message && (
-          <div className={`toast ${message.includes('Error') || message.includes('Failed') ? 'toast-error' : 'toast-info'}`} style={{ position: 'relative', bottom: 'auto', right: 'auto', marginBottom: 16, maxWidth: '100%' }}>
+          <div className={`toast ${message.includes('Error') || message.includes('Failed') ? 'toast-error' : 'toast-info'}`}
+            style={{ position: 'relative', bottom: 'auto', right: 'auto', marginBottom: 16, maxWidth: '100%' }}>
             {message}
+            <button style={{ marginLeft: 12, background: 'none', border: 'none', cursor: 'pointer', opacity: 0.7 }} onClick={() => setMessage('')}>✕</button>
           </div>
         )}
 
@@ -220,9 +226,10 @@ export default function StudentsPage() {
                       <td><span className="badge badge-gray">{s.user?.username}</span></td>
                       <td><span className={`badge ${s.user?.isActive ? 'badge-green' : 'badge-red'}`}>{s.user?.isActive ? 'Active' : 'Inactive'}</span></td>
                       <td>
-                        <div style={{ display: 'flex', gap: 6 }}>
+                        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                          <button className="btn btn-secondary btn-sm" onClick={() => openEditModal(s)}>Edit</button>
                           {s.user?.id && (
-                            <button className="btn btn-ghost btn-sm" onClick={() => { setPwdTarget({ id: s.user.id, name: s.name }); setShowPwdModal(true); setPwdForm({ newPassword: '', confirmAdminPassword: '' }); setMessage(''); }}>Reset Password</button>
+                            <button className="btn btn-ghost btn-sm" onClick={() => { setPwdTarget({ id: s.user.id, name: s.name }); setShowPwdModal(true); setPwdForm({ newPassword: '', confirmAdminPassword: '' }); setMessage(''); }}>Reset Pwd</button>
                           )}
                           <button className="btn btn-red btn-sm" onClick={() => deleteStudent(s.id)}>Delete</button>
                         </div>
@@ -230,11 +237,7 @@ export default function StudentsPage() {
                     </tr>
                   ))}
                   {students.length === 0 && (
-                    <tr>
-                      <td colSpan={7} style={{ textAlign: 'center', padding: 40 }}>
-                        No students in this division
-                      </td>
-                    </tr>
+                    <tr><td colSpan={7} style={{ textAlign: 'center', padding: 40 }}>No students in this division</td></tr>
                   )}
                 </tbody>
               </table>
@@ -243,6 +246,7 @@ export default function StudentsPage() {
         )}
       </div>
 
+      {/* Password Reset Modal */}
       {showPwdModal && (
         <div className="modal-overlay" onClick={() => setShowPwdModal(false)}>
           <div className="modal" onClick={e => e.stopPropagation()}>
@@ -270,11 +274,12 @@ export default function StudentsPage() {
         </div>
       )}
 
+      {/* Add / Edit Student Modal */}
       {showModal && (
         <div className="modal-overlay" onClick={() => setShowModal(false)}>
           <div className="modal" onClick={e => e.stopPropagation()}>
             <div className="modal-header">
-              <h3>{genInfo ? 'Student Created' : 'Add Student'}</h3>
+              <h3>{genInfo ? 'Student Created' : editingStudent ? `Edit — ${editingStudent.name}` : 'Add Student'}</h3>
               <button className="btn btn-ghost btn-icon" onClick={() => setShowModal(false)}>✕</button>
             </div>
             {genInfo ? (
@@ -288,7 +293,7 @@ export default function StudentsPage() {
                 <button className="btn btn-primary" style={{ marginTop: 16 }} onClick={() => { setShowModal(false); setGenInfo(null); }}>Done</button>
               </div>
             ) : (
-              <form onSubmit={createStudent}>
+              <form onSubmit={saveStudent}>
                 <div className="modal-body">
                   <div className="form-row">
                     <div className="form-group"><label className="form-label">Roll Number *</label><input className="form-input" type="number" required value={form.rollNumber} onChange={e => setForm({ ...form, rollNumber: e.target.value })} /></div>
@@ -301,7 +306,9 @@ export default function StudentsPage() {
                 </div>
                 <div className="modal-footer">
                   <button type="button" className="btn btn-secondary" onClick={() => setShowModal(false)}>Cancel</button>
-                  <button type="submit" className="btn btn-primary" disabled={loading}>{loading ? 'Creating...' : 'Create Student'}</button>
+                  <button type="submit" className="btn btn-primary" disabled={loading}>
+                    {loading ? (editingStudent ? 'Saving...' : 'Creating...') : (editingStudent ? 'Save Changes' : 'Create Student')}
+                  </button>
                 </div>
               </form>
             )}
@@ -311,4 +318,3 @@ export default function StudentsPage() {
     </DashboardLayout>
   );
 }
-

@@ -1,43 +1,52 @@
 /**
  * Timetable Generation Engine
- * 
+ *
  * Uses constraint-satisfaction with backtracking to generate
  * conflict-free weekly timetables for Kerala government schools.
- * 
+ *
  * Rules:
- * 1. 7 periods/day: 4 before lunch (1-4), 3 after lunch (5-7)
- * 2. Class teacher gets Period 1
- * 3. Core subjects prioritized in morning slots
- * 4. Evening priority subjects in afternoon slots (5-7)
+ * 1. Variable periods/day and working days (from school settings)
+ * 2. Class teacher gets Period 1 on each day
+ * 3. Core subjects prioritized in morning slots (1 to morningPeriods)
+ * 4. Evening priority subjects in afternoon slots
  * 5. No teacher double-booking
- * 6. Max one occurrence of each subject per day per division
- * 7. Consecutive slots for subjects requiring them
+ * 6. Max one occurrence of each subject per day per division (unless forced)
+ * 7. Consecutive slots for subjects requiring them (no spanning lunch)
  * 8. Uniform teaching load distribution
- * 9. Single teacher per subject per division
+ * 9. Fixed-day/slot subjects (e.g. Recreation = Friday last) placed first
+ * 10. useClassTeacher subjects bypass teacher lookup and use division's class teacher
+ * 11. Teacher-class restrictions: if a teacher has restricted classes for a subject,
+ *     they only teach that subject to those classes
  */
 
 export interface TimetableInput {
   divisions: DivisionInput[];
   subjects: SubjectInput[];
   teachers: TeacherInput[];
-  days: number; // 5 or 6
-  slotsPerDay: number; // 7
+  days: number;        // 5 or 6
+  slotsPerDay: number; // e.g. 7
+  morningPeriods: number; // periods before lunch, e.g. 4
 }
 
 export interface DivisionInput {
   id: string;
-  name: string; // e.g., "8A"
+  name: string;       // e.g., "8A"
+  classId: string;    // parent class ID
   classTeacherId: string | null;
   subjects: DivisionSubjectInput[];
 }
 
 export interface DivisionSubjectInput {
   subjectId: string;
-  teacherId: string; // assigned teacher for this subject in this division
+  teacherId: string;        // pre-resolved teacher for this division-subject
   periodsPerWeek: number;
   isCore: boolean;
   eveningPriority: boolean;
   consecutiveSlots: number;
+  // Fixed placement rules
+  fixedDay: number | null;    // 1–6; null = flexible
+  fixedSlot: string | null;   // "FIRST" | "LAST" | "1"–"12"; null = flexible
+  useClassTeacher: boolean;   // if true, use division.classTeacherId
 }
 
 export interface SubjectInput {
@@ -76,79 +85,155 @@ export interface GenerationResult {
   };
 }
 
-export function generateTimetable(input: TimetableInput): GenerationResult {
-  const { divisions, days, slotsPerDay } = input;
+export function generateTimetable(input: TimetableInput, activeConstraints: string[] = []): GenerationResult {
+  const { divisions, days, slotsPerDay, morningPeriods } = input;
   const errors: string[] = [];
   const warnings: string[] = [];
   const timetable: TimetableSlot[] = [];
 
-  // Track teacher assignments: teacher -> day -> Set of slots
+  // Track teacher assignments: teacherId → day → Set<slot>
   const teacherSchedule: Map<string, Map<number, Set<number>>> = new Map();
-  // Track subject-per-day per division: division -> day -> Set of subjects
+  // Track subjects placed per division per day: divisionId → day → Set<subjectId>
   const divisionDaySubjects: Map<string, Map<number, Set<string>>> = new Map();
-  // Track total assignments per teacher for load balancing
+  // Teacher load for balancing
   const teacherLoad: Map<string, number> = new Map();
 
   let iterations = 0;
 
-  // Initialize tracking structures
+  // ── Initialize tracking structures ───────────────────────────────────────
+  const allTeacherIds = new Set<string>();
   for (const div of divisions) {
     divisionDaySubjects.set(div.id, new Map());
     for (let day = 1; day <= days; day++) {
       divisionDaySubjects.get(div.id)!.set(day, new Set());
     }
     for (const ds of div.subjects) {
-      if (!teacherSchedule.has(ds.teacherId)) {
-        teacherSchedule.set(ds.teacherId, new Map());
+      const tid = ds.useClassTeacher ? (div.classTeacherId ?? ds.teacherId) : ds.teacherId;
+      if (tid && !teacherSchedule.has(tid)) {
+        teacherSchedule.set(tid, new Map());
         for (let day = 1; day <= days; day++) {
-          teacherSchedule.get(ds.teacherId)!.set(day, new Set());
+          teacherSchedule.get(tid)!.set(day, new Set());
         }
+        teacherLoad.set(tid, 0);
+        allTeacherIds.add(tid);
       }
-      teacherLoad.set(ds.teacherId, 0);
     }
   }
 
-  // Step 1: Assign class teacher to Period 1 for each division
+  // Helper: resolve actual teacher for a division-subject
+  function resolveTeacherId(ds: DivisionSubjectInput, div: DivisionInput): string {
+    if (ds.useClassTeacher) return div.classTeacherId ?? ds.teacherId;
+    return ds.teacherId;
+  }
+
+  // Helper: resolve slot number from "FIRST" / "LAST" / numeric string
+  function resolveSlot(fixedSlot: string): number {
+    if (fixedSlot === 'FIRST') return 1;
+    if (fixedSlot === 'LAST') return slotsPerDay;
+    return parseInt(fixedSlot, 10) || 1;
+  }
+
+  // ── Step 0: Pin fixed-day/slot subjects ───────────────────────────────────
   for (const div of divisions) {
-    if (!div.classTeacherId) continue;
+    for (const ds of div.subjects) {
+      if (!ds.fixedDay && !ds.fixedSlot) continue;
 
-    // Find the subject the class teacher teaches for this division
-    const ctSubject = div.subjects.find(s => s.teacherId === div.classTeacherId);
-    if (!ctSubject) {
-      warnings.push(`Class teacher for ${div.name} doesn't teach any subject in this division`);
-      continue;
+      const teacherId = resolveTeacherId(ds, div);
+      if (!teacherId) {
+        warnings.push(`${div.name}: ${ds.subjectId} has fixed placement but no teacher assigned.`);
+        continue;
+      }
+
+      // Ensure tracking exists for this teacher
+      if (!teacherSchedule.has(teacherId)) {
+        teacherSchedule.set(teacherId, new Map());
+        for (let day = 1; day <= days; day++) teacherSchedule.get(teacherId)!.set(day, new Set());
+        teacherLoad.set(teacherId, 0);
+      }
+
+      let periodsPlaced = 0;
+
+      // Determine which days to pin on
+      const targetDays: number[] = ds.fixedDay
+        ? [ds.fixedDay]
+        : Array.from({ length: days }, (_, i) => i + 1);
+
+      for (const day of targetDays) {
+        if (day > days) continue; // Respect workingDays
+        if (periodsPlaced >= ds.periodsPerWeek) break;
+
+        const targetSlot = ds.fixedSlot ? resolveSlot(ds.fixedSlot) : null;
+
+        if (targetSlot !== null) {
+          // Check if slot is free
+          const occupied = timetable.find(
+            t => t.divisionId === div.id && t.dayOfWeek === day && t.slotNumber === targetSlot
+          );
+          if (occupied) {
+            warnings.push(`${div.name}: Fixed slot Day${day}/Slot${targetSlot} already occupied — skipping ${ds.subjectId}`);
+            continue;
+          }
+          if (teacherSchedule.get(teacherId)?.get(day)?.has(targetSlot)) {
+            warnings.push(`${div.name}: Teacher busy at Day${day}/Slot${targetSlot} for fixed subject ${ds.subjectId}`);
+            continue;
+          }
+
+          timetable.push({ divisionId: div.id, dayOfWeek: day, slotNumber: targetSlot, subjectId: ds.subjectId, teacherId });
+          teacherSchedule.get(teacherId)!.get(day)!.add(targetSlot);
+          divisionDaySubjects.get(div.id)!.get(day)!.add(ds.subjectId);
+          teacherLoad.set(teacherId, (teacherLoad.get(teacherId) || 0) + 1);
+          periodsPlaced++;
+          iterations++;
+        }
+      }
+
+      if (periodsPlaced < ds.periodsPerWeek) {
+        warnings.push(`${div.name}: Fixed subject ${ds.subjectId} only placed ${periodsPlaced}/${ds.periodsPerWeek} times`);
+      }
     }
+  }
 
-    for (let day = 1; day <= days; day++) {
-      // Check if class teacher is already assigned to slot 1 on this day
-      if (teacherSchedule.get(div.classTeacherId)?.get(day)?.has(1)) continue;
+  // ── Step 1: Class teacher gets Period 1 each day ────────────────────────
+  const enableClassTeacherPeriod1 = activeConstraints.length === 0 || activeConstraints.includes('c_ct_period1');
+  if (enableClassTeacherPeriod1) {
+    for (const div of divisions) {
+      if (!div.classTeacherId) continue;
 
-      // Check if we still need periods for this subject
-      const currentCount = timetable.filter(
-        t => t.divisionId === div.id && t.subjectId === ctSubject.subjectId
-      ).length;
+      // Find the main subject the class teacher teaches for this division
+      // (prefer a non-fixed subject, ignore useClassTeacher subjects for period 1)
+      const ctSubject = div.subjects.find(
+        s => s.teacherId === div.classTeacherId && !s.fixedDay && !s.fixedSlot
+      );
+      if (!ctSubject) {
+        warnings.push(`Class teacher for ${div.name} has no flexible subject — Period 1 not assigned`);
+        continue;
+      }
 
-      if (currentCount < ctSubject.periodsPerWeek) {
-        // Check if subject already assigned this day
+      const teacherId = div.classTeacherId;
+
+      for (let day = 1; day <= days; day++) {
+        if (teacherSchedule.get(teacherId)?.get(day)?.has(1)) continue;
+
+        const alreadyPlaced = timetable.filter(
+          t => t.divisionId === div.id && t.subjectId === ctSubject.subjectId
+        ).length;
+        if (alreadyPlaced >= ctSubject.periodsPerWeek) continue;
+
         if (divisionDaySubjects.get(div.id)?.get(day)?.has(ctSubject.subjectId)) continue;
 
-        timetable.push({
-          divisionId: div.id,
-          dayOfWeek: day,
-          slotNumber: 1,
-          subjectId: ctSubject.subjectId,
-          teacherId: div.classTeacherId,
-        });
+        // Check slot 1 is free in this division
+        if (timetable.find(t => t.divisionId === div.id && t.dayOfWeek === day && t.slotNumber === 1)) continue;
 
-        teacherSchedule.get(div.classTeacherId)!.get(day)!.add(1);
+        timetable.push({ divisionId: div.id, dayOfWeek: day, slotNumber: 1, subjectId: ctSubject.subjectId, teacherId });
+        teacherSchedule.get(teacherId)!.get(day)!.add(1);
         divisionDaySubjects.get(div.id)!.get(day)!.add(ctSubject.subjectId);
-        teacherLoad.set(div.classTeacherId, (teacherLoad.get(div.classTeacherId) || 0) + 1);
+        teacherLoad.set(teacherId, (teacherLoad.get(teacherId) || 0) + 1);
         iterations++;
       }
     }
   }
 
-  // Step 2: Build a list of all subject-division assignments needed
+  // ── Step 2: Build remaining assignments list ──────────────────────────────
   interface Assignment {
     divisionId: string;
     divisionName: string;
@@ -158,73 +243,79 @@ export function generateTimetable(input: TimetableInput): GenerationResult {
     isCore: boolean;
     eveningPriority: boolean;
     consecutiveSlots: number;
-    priority: number; // lower = higher priority
+    priority: number;
+    hasFixedPlacement: boolean;
   }
 
   const assignments: Assignment[] = [];
 
   for (const div of divisions) {
     for (const ds of div.subjects) {
-      const currentCount = timetable.filter(
+      const teacherId = resolveTeacherId(ds, div);
+      if (!teacherId) continue;
+
+      const alreadyPlaced = timetable.filter(
         t => t.divisionId === div.id && t.subjectId === ds.subjectId
       ).length;
 
-      const remaining = ds.periodsPerWeek - currentCount;
-      if (remaining > 0) {
-        // Priority: core morning subjects > non-core > evening priority
-        let priority = 0;
-        if (ds.isCore && !ds.eveningPriority) priority = 1;
-        else if (ds.isCore) priority = 2;
-        else if (!ds.eveningPriority) priority = 3;
-        else priority = 4;
+      const remaining = ds.periodsPerWeek - alreadyPlaced;
+      if (remaining <= 0) continue;
 
-        // Higher period count = higher priority (more constrained)
-        if (ds.periodsPerWeek >= 5) priority -= 0.5;
-        if (ds.consecutiveSlots > 1) priority -= 0.3;
+      let priority = 0;
+      if (ds.isCore && !ds.eveningPriority) priority = 1;
+      else if (ds.isCore) priority = 2;
+      else if (!ds.eveningPriority) priority = 3;
+      else priority = 4;
 
-        assignments.push({
-          divisionId: div.id,
-          divisionName: div.name,
-          subjectId: ds.subjectId,
-          teacherId: ds.teacherId,
-          periodsNeeded: remaining,
-          isCore: ds.isCore,
-          eveningPriority: ds.eveningPriority,
-          consecutiveSlots: ds.consecutiveSlots,
-          priority,
-        });
-      }
+      if (ds.periodsPerWeek >= 5) priority -= 0.5;
+      if (ds.consecutiveSlots > 1) priority -= 0.3;
+      if (ds.fixedDay || ds.fixedSlot) continue; // already handled in Step 0
+
+      assignments.push({
+        divisionId: div.id,
+        divisionName: div.name,
+        subjectId: ds.subjectId,
+        teacherId,
+        periodsNeeded: remaining,
+        isCore: ds.isCore,
+        eveningPriority: ds.eveningPriority,
+        consecutiveSlots: ds.consecutiveSlots,
+        priority,
+        hasFixedPlacement: !!(ds.fixedDay || ds.fixedSlot),
+      });
     }
   }
 
-  // Sort by priority (most constrained first)
   assignments.sort((a, b) => a.priority - b.priority);
 
-  // Step 3: Assign remaining slots using constraint satisfaction
+  // ── Step 3: Assign remaining slots via constraint satisfaction ───────────
   for (const assignment of assignments) {
     let periodsAssigned = 0;
 
-    // Determine preferred slots
+    // Build slot preference list
     const preferredSlots: number[] = [];
     const fallbackSlots: number[] = [];
 
-    if (assignment.eveningPriority) {
-      // Prefer afternoon slots
-      for (let s = 5; s <= slotsPerDay; s++) preferredSlots.push(s);
-      for (let s = 2; s <= 4; s++) fallbackSlots.push(s); // Skip slot 1 (class teacher)
-    } else if (assignment.isCore) {
-      // Prefer morning slots
-      for (let s = 2; s <= 4; s++) preferredSlots.push(s);
-      preferredSlots.push(1); // slot 1 may be available if not class teacher's subject
-      for (let s = 5; s <= slotsPerDay; s++) fallbackSlots.push(s);
+    const enableCoreMorning = activeConstraints.length === 0 || activeConstraints.includes('c_core_morning');
+    const enableEveningPriority = activeConstraints.length === 0 || activeConstraints.includes('c_evening_priority');
+
+    if (assignment.eveningPriority && enableEveningPriority) {
+      for (let s = morningPeriods + 1; s <= slotsPerDay; s++) preferredSlots.push(s);
+      for (let s = 2; s <= morningPeriods; s++) fallbackSlots.push(s);
+    } else if (assignment.isCore && enableCoreMorning) {
+      for (let s = 2; s <= morningPeriods; s++) preferredSlots.push(s);
+      preferredSlots.push(1);
+      for (let s = morningPeriods + 1; s <= slotsPerDay; s++) fallbackSlots.push(s);
     } else {
-      for (let s = 2; s <= slotsPerDay; s++) preferredSlots.push(s);
+      const startSlot = enableClassTeacherPeriod1 ? 2 : 1;
+      for (let s = startSlot; s <= slotsPerDay; s++) preferredSlots.push(s);
+      if (enableClassTeacherPeriod1) fallbackSlots.push(1);
     }
 
     const allSlots = [...preferredSlots, ...fallbackSlots];
-
-    // Try to distribute across days
     const dayOrder = shuffleDays(days);
+
+    const enableNoSameTeacherConsecutive = activeConstraints.includes('c_no_same_teacher_consecutive');
 
     while (periodsAssigned < assignment.periodsNeeded) {
       let placed = false;
@@ -232,56 +323,28 @@ export function generateTimetable(input: TimetableInput): GenerationResult {
       for (const day of dayOrder) {
         if (periodsAssigned >= assignment.periodsNeeded) break;
 
-        // Check if subject already placed on this day for this division
-        if (divisionDaySubjects.get(assignment.divisionId)?.get(day)?.has(assignment.subjectId)) {
-          continue;
-        }
+        const enableMaxOnceDay = activeConstraints.length === 0 || activeConstraints.includes('c_max_once_day');
+        if (enableMaxOnceDay && divisionDaySubjects.get(assignment.divisionId)?.get(day)?.has(assignment.subjectId)) continue;
 
         for (const slot of allSlots) {
           iterations++;
 
-          // Handle consecutive slots
           if (assignment.consecutiveSlots > 1) {
-            const canPlaceConsecutive = canPlaceConsecutiveSlots(
-              timetable,
-              teacherSchedule,
-              assignment,
-              day,
-              slot,
-              assignment.consecutiveSlots,
-              slotsPerDay
-            );
-
-            if (canPlaceConsecutive) {
+            const enableNoSpanLunch = activeConstraints.length === 0 || activeConstraints.includes('c_no_span_lunch');
+            if (canPlaceConsecutiveSlots(timetable, teacherSchedule, assignment, day, slot, assignment.consecutiveSlots, slotsPerDay, morningPeriods, enableNoSpanLunch, enableNoSameTeacherConsecutive)) {
               for (let cs = 0; cs < assignment.consecutiveSlots; cs++) {
-                timetable.push({
-                  divisionId: assignment.divisionId,
-                  dayOfWeek: day,
-                  slotNumber: slot + cs,
-                  subjectId: assignment.subjectId,
-                  teacherId: assignment.teacherId,
-                });
-
+                timetable.push({ divisionId: assignment.divisionId, dayOfWeek: day, slotNumber: slot + cs, subjectId: assignment.subjectId, teacherId: assignment.teacherId });
                 teacherSchedule.get(assignment.teacherId)!.get(day)!.add(slot + cs);
                 teacherLoad.set(assignment.teacherId, (teacherLoad.get(assignment.teacherId) || 0) + 1);
               }
-
               divisionDaySubjects.get(assignment.divisionId)!.get(day)!.add(assignment.subjectId);
               periodsAssigned += assignment.consecutiveSlots;
               placed = true;
               break;
             }
           } else {
-            // Single slot
-            if (canPlaceSlot(timetable, teacherSchedule, assignment, day, slot)) {
-              timetable.push({
-                divisionId: assignment.divisionId,
-                dayOfWeek: day,
-                slotNumber: slot,
-                subjectId: assignment.subjectId,
-                teacherId: assignment.teacherId,
-              });
-
+            if (canPlaceSlot(timetable, teacherSchedule, assignment, day, slot, enableNoSameTeacherConsecutive)) {
+              timetable.push({ divisionId: assignment.divisionId, dayOfWeek: day, slotNumber: slot, subjectId: assignment.subjectId, teacherId: assignment.teacherId });
               teacherSchedule.get(assignment.teacherId)!.get(day)!.add(slot);
               divisionDaySubjects.get(assignment.divisionId)!.get(day)!.add(assignment.subjectId);
               teacherLoad.set(assignment.teacherId, (teacherLoad.get(assignment.teacherId) || 0) + 1);
@@ -296,19 +359,12 @@ export function generateTimetable(input: TimetableInput): GenerationResult {
       }
 
       if (!placed) {
-        // Try relaxed placement - allow subject on same day if necessary
+        // Relaxed: allow same-day repeat
         let forcePlaced = false;
         for (const day of dayOrder) {
           for (const slot of allSlots) {
-            if (canPlaceSlot(timetable, teacherSchedule, assignment, day, slot)) {
-              timetable.push({
-                divisionId: assignment.divisionId,
-                dayOfWeek: day,
-                slotNumber: slot,
-                subjectId: assignment.subjectId,
-                teacherId: assignment.teacherId,
-              });
-
+            if (canPlaceSlot(timetable, teacherSchedule, assignment, day, slot, enableNoSameTeacherConsecutive)) {
+              timetable.push({ divisionId: assignment.divisionId, dayOfWeek: day, slotNumber: slot, subjectId: assignment.subjectId, teacherId: assignment.teacherId });
               teacherSchedule.get(assignment.teacherId)!.get(day)!.add(slot);
               divisionDaySubjects.get(assignment.divisionId)!.get(day)!.add(assignment.subjectId);
               teacherLoad.set(assignment.teacherId, (teacherLoad.get(assignment.teacherId) || 0) + 1);
@@ -331,7 +387,6 @@ export function generateTimetable(input: TimetableInput): GenerationResult {
     }
   }
 
-  // Calculate stats
   const totalExpected = divisions.reduce(
     (sum, div) => sum + div.subjects.reduce((s, ds) => s + ds.periodsPerWeek, 0),
     0
@@ -351,22 +406,35 @@ export function generateTimetable(input: TimetableInput): GenerationResult {
   };
 }
 
+// ── Helpers ────────────────────────────────────────────────────────────────
+
 function canPlaceSlot(
   timetable: TimetableSlot[],
   teacherSchedule: Map<string, Map<number, Set<number>>>,
   assignment: { divisionId: string; teacherId: string; subjectId: string },
   day: number,
-  slot: number
+  slot: number,
+  enableNoSameTeacherConsecutive: boolean = false
 ): boolean {
-  // Check if slot is already occupied in this division
-  const existing = timetable.find(
-    t => t.divisionId === assignment.divisionId && t.dayOfWeek === day && t.slotNumber === slot
-  );
-  if (existing) return false;
+  if (timetable.find(t => t.divisionId === assignment.divisionId && t.dayOfWeek === day && t.slotNumber === slot)) return false;
+  if (teacherSchedule.get(assignment.teacherId)?.get(day)?.has(slot)) return false;
 
-  // Check if teacher is already busy at this slot on this day
-  if (teacherSchedule.get(assignment.teacherId)?.get(day)?.has(slot)) {
-    return false;
+  if (enableNoSameTeacherConsecutive) {
+    const daySchedule = teacherSchedule.get(assignment.teacherId)?.get(day);
+    if (daySchedule) {
+      let consecutiveCount = 1;
+      let prev = slot - 1;
+      while (daySchedule.has(prev)) {
+        consecutiveCount++;
+        prev--;
+      }
+      let next = slot + 1;
+      while (daySchedule.has(next)) {
+        consecutiveCount++;
+        next++;
+      }
+      if (consecutiveCount > 3) return false;
+    }
   }
 
   return true;
@@ -379,26 +447,22 @@ function canPlaceConsecutiveSlots(
   day: number,
   startSlot: number,
   count: number,
-  maxSlots: number
+  maxSlots: number,
+  morningPeriods: number,
+  enableNoSpanLunch: boolean,
+  enableNoSameTeacherConsecutive: boolean = false
 ): boolean {
-  // Don't span across lunch break (slot 4 to 5)
-  if (startSlot <= 4 && startSlot + count - 1 >= 5) return false;
-
-  // Check bounds
+  // Don't span across lunch break
+  if (enableNoSpanLunch && startSlot <= morningPeriods && startSlot + count - 1 > morningPeriods) return false;
   if (startSlot + count - 1 > maxSlots) return false;
-
   for (let i = 0; i < count; i++) {
-    if (!canPlaceSlot(timetable, teacherSchedule, assignment, day, startSlot + i)) {
-      return false;
-    }
+    if (!canPlaceSlot(timetable, teacherSchedule, assignment, day, startSlot + i, enableNoSameTeacherConsecutive)) return false;
   }
-
   return true;
 }
 
 function shuffleDays(days: number): number[] {
   const dayArray = Array.from({ length: days }, (_, i) => i + 1);
-  // Fisher-Yates shuffle
   for (let i = dayArray.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
     [dayArray[i], dayArray[j]] = [dayArray[j], dayArray[i]];
@@ -406,9 +470,8 @@ function shuffleDays(days: number): number[] {
   return dayArray;
 }
 
-/**
- * Find free teachers for a given day and slot
- */
+// ── Public utilities ───────────────────────────────────────────────────────
+
 export function findFreeTeachers(
   timetable: TimetableSlot[],
   allTeacherIds: string[],
@@ -416,17 +479,11 @@ export function findFreeTeachers(
   slot: number
 ): string[] {
   const busyTeachers = new Set(
-    timetable
-      .filter(t => t.dayOfWeek === day && t.slotNumber === slot)
-      .map(t => t.teacherId)
+    timetable.filter(t => t.dayOfWeek === day && t.slotNumber === slot).map(t => t.teacherId)
   );
-
   return allTeacherIds.filter(id => !busyTeachers.has(id));
 }
 
-/**
- * Get all slots where a teacher is assigned on a given day
- */
 export function getTeacherSlotsForDay(
   timetable: TimetableSlot[],
   teacherId: string,
@@ -435,9 +492,6 @@ export function getTeacherSlotsForDay(
   return timetable.filter(t => t.teacherId === teacherId && t.dayOfWeek === day);
 }
 
-/**
- * Get timetable for a specific division
- */
 export function getDivisionTimetable(
   timetable: TimetableSlot[],
   divisionId: string

@@ -55,6 +55,48 @@ export async function POST(req: NextRequest) {
   return NextResponse.json({ success: true, data: cls }, { status: 201 });
 }
 
+// PATCH update class
+export async function PATCH(req: NextRequest) {
+  const session = await getServerSession(authOptions);
+  if (!session || session.user.role !== 'SCHOOL_ADMIN' || !session.user.tenantId) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 403 });
+  }
+
+  const body = await req.json();
+  const { id, name, order, addDivisions } = body;
+
+  if (!id) return NextResponse.json({ error: 'Class ID required' }, { status: 400 });
+
+  const cls = await prisma.class.findFirst({
+    where: { id, tenantId: session.user.tenantId },
+    include: { divisions: true },
+  });
+  if (!cls) return NextResponse.json({ error: 'Class not found' }, { status: 404 });
+
+  await prisma.$transaction(async (tx) => {
+    await tx.class.update({
+      where: { id },
+      data: {
+        ...(name ? { name } : {}),
+        ...(order !== undefined ? { order } : {}),
+      },
+    });
+
+    // Add new divisions (skip existing ones)
+    if (addDivisions && addDivisions.length > 0) {
+      const existingNames = new Set(cls.divisions.map((d: any) => d.name.toLowerCase()));
+      const newDivisions = addDivisions.filter((d: string) => !existingNames.has(d.toLowerCase()));
+      if (newDivisions.length > 0) {
+        await tx.division.createMany({
+          data: newDivisions.map((d: string) => ({ classId: id, name: d })),
+        });
+      }
+    }
+  });
+
+  return NextResponse.json({ success: true });
+}
+
 // DELETE class
 export async function DELETE(req: NextRequest) {
   const session = await getServerSession(authOptions);

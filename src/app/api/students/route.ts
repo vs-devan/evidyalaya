@@ -89,6 +89,49 @@ export async function POST(req: NextRequest) {
   }, { status: 201 });
 }
 
+// PATCH update student
+export async function PATCH(req: NextRequest) {
+  const session = await getServerSession(authOptions);
+  if (!session || !session.user.tenantId) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 403 });
+  }
+
+  const body = await req.json();
+  const { id, name, rollNumber, parentName, parentPhone } = body;
+
+  if (!id) return NextResponse.json({ error: 'Student ID required' }, { status: 400 });
+
+  const student = await prisma.student.findUnique({
+    where: { id },
+    include: { user: true },
+  });
+
+  if (!student) return NextResponse.json({ error: 'Student not found' }, { status: 404 });
+  if (student.user?.tenantId !== session.user.tenantId) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 403 });
+  }
+
+  await prisma.student.update({
+    where: { id },
+    data: {
+      ...(name ? { name } : {}),
+      ...(rollNumber !== undefined ? { rollNumber: parseInt(String(rollNumber)) } : {}),
+      ...(parentName !== undefined ? { parentName } : {}),
+      ...(parentPhone !== undefined ? { parentPhone } : {}),
+    },
+  });
+
+  // Also update name on the linked user account
+  if (name && student.user) {
+    await prisma.user.update({
+      where: { id: student.user.id },
+      data: { name, ...(parentPhone !== undefined ? { phone: parentPhone } : {}) },
+    });
+  }
+
+  return NextResponse.json({ success: true });
+}
+
 // DELETE student
 export async function DELETE(req: NextRequest) {
   const session = await getServerSession(authOptions);

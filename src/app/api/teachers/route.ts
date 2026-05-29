@@ -90,6 +90,87 @@ export async function POST(req: NextRequest) {
   }, { status: 201 });
 }
 
+// PATCH update teacher
+export async function PATCH(req: NextRequest) {
+  const session = await getServerSession(authOptions);
+  if (!session || session.user.role !== 'SCHOOL_ADMIN' || !session.user.tenantId) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 403 });
+  }
+
+  const body = await req.json();
+  const { id, name, teacherCode, penNo, designation, phone, email, subjectIds, classTeacherDivisionId, features } = body;
+
+  if (!id) return NextResponse.json({ error: 'Teacher ID required' }, { status: 400 });
+
+  const teacher = await prisma.teacher.findUnique({
+    where: { id },
+    include: { user: true, classTeacherOf: true },
+  });
+  if (!teacher || teacher.user.tenantId !== session.user.tenantId) {
+    return NextResponse.json({ error: 'Teacher not found' }, { status: 404 });
+  }
+
+  const userId = teacher.user.id;
+
+  await prisma.$transaction(async (tx) => {
+    // Update user profile
+    if (name || phone !== undefined || email !== undefined) {
+      await tx.user.update({
+        where: { id: userId },
+        data: {
+          ...(name ? { name } : {}),
+          ...(phone !== undefined ? { phone } : {}),
+          ...(email !== undefined ? { email } : {}),
+        },
+      });
+    }
+
+    // Update teacher core fields
+    await tx.teacher.update({
+      where: { id },
+      data: {
+        ...(teacherCode ? { teacherCode } : {}),
+        ...(penNo !== undefined ? { penNo } : {}),
+        ...(designation ? { designation } : {}),
+      },
+    });
+
+    // Replace subject mappings
+    if (subjectIds !== undefined) {
+      await tx.teacherSubject.deleteMany({ where: { teacherId: id } });
+      if (subjectIds.length > 0) {
+        await tx.teacherSubject.createMany({
+          data: subjectIds.map((sid: string) => ({ teacherId: id, subjectId: sid })),
+        });
+      }
+    }
+
+    // Update class teacher assignment
+    if (classTeacherDivisionId !== undefined) {
+      // Remove existing assignment
+      await tx.division.updateMany({ where: { classTeacherId: id }, data: { classTeacherId: null } });
+      if (classTeacherDivisionId) {
+        await tx.division.update({
+          where: { id: classTeacherDivisionId },
+          data: { classTeacherId: id },
+        });
+      }
+    }
+
+    // Replace feature access
+    if (features !== undefined) {
+      await tx.featureAccess.deleteMany({ where: { userId } });
+      if (features.length > 0) {
+        await tx.featureAccess.createMany({
+          data: features.map((f: string) => ({ userId, feature: f })),
+        });
+      }
+    }
+  });
+
+  return NextResponse.json({ success: true });
+}
+
 // DELETE teacher
 export async function DELETE(req: NextRequest) {
   const session = await getServerSession(authOptions);

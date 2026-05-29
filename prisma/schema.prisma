@@ -12,15 +12,20 @@ datasource db {
 // ===== MULTI-TENANT CORE =====
 
 model Tenant {
-  id           String   @id @default(cuid())
-  name         String   // e.g., "TSHSS Punalur - UP Section"
-  code         String   @unique // e.g., "up_tshss", "hs_tshss"
-  schoolName   String   // e.g., "TSHSS Punalur"
-  section      String   // "UP" or "HS"
-  academicYear String   @default("2025-2026")
-  isActive     Boolean  @default(true)
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  id             String   @id @default(cuid())
+  name           String   // e.g., "TSHSS Punalur - UP Section"
+  code           String   @unique // e.g., "up_tshss", "hs_tshss"
+  schoolName     String   // e.g., "TSHSS Punalur"
+  section        String   // "UP" or "HS"
+  academicYear   String   @default("2025-2026")
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  // === School-wide timetable settings ===
+  periodsPerDay  Int      @default(7)  // Total slots per school day
+  workingDays    Int      @default(5)  // 5 = Mon–Fri, 6 = Mon–Sat
+  morningPeriods Int      @default(4)  // Periods before lunch (core priority zone)
 
   users                User[]
   classes              Class[]
@@ -107,6 +112,9 @@ model Teacher {
   // Subjects this teacher can teach
   subjectMappings TeacherSubject[]
 
+  // Per-class restrictions: which classes this teacher can teach each subject
+  subjectClassRestrictions TeacherSubjectClass[]
+
   // Class teacher of
   classTeacherOf Division?  @relation("ClassTeacher")
 
@@ -122,6 +130,25 @@ model Teacher {
 
   @@unique([teacherCode])
   @@map("teachers")
+}
+
+// Per-teacher, per-subject class restriction.
+// If records exist for a (teacherId, subjectId) pair, the teacher may only
+// teach that subject to those specific classes.
+// No records = unrestricted (can teach to any class).
+model TeacherSubjectClass {
+  id         String @id @default(cuid())
+  teacherId  String
+  subjectId  String
+  divisionId String
+
+  teacher  Teacher  @relation(fields: [teacherId], references: [id], onDelete: Cascade)
+  subject  Subject  @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  division Division @relation(fields: [divisionId], references: [id], onDelete: Cascade)
+
+  @@unique([teacherId, subjectId, divisionId])
+  @@index([teacherId, subjectId])
+  @@map("teacher_subject_classes")
 }
 
 model TeacherSubject {
@@ -144,26 +171,28 @@ model Class {
   name     String // e.g., "5", "6", "7", "8", "9", "10"
   order    Int    // for sorting
 
-  tenant   Tenant     @relation(fields: [tenantId], references: [id])
-  divisions Division[]
+  tenant        Tenant       @relation(fields: [tenantId], references: [id])
+  divisions     Division[]
+  classSubjects ClassSubject[]
 
   @@unique([tenantId, name])
   @@map("classes")
 }
 
 model Division {
-  id              String @id @default(cuid())
+  id              String  @id @default(cuid())
   classId         String
   name            String // e.g., "A", "B", "C"
   classTeacherId  String? @unique
 
-  class       Class    @relation(fields: [classId], references: [id], onDelete: Cascade)
+  class        Class   @relation(fields: [classId], references: [id], onDelete: Cascade)
   classTeacher Teacher? @relation("ClassTeacher", fields: [classTeacherId], references: [id])
 
   students         Student[]
   timetableEntries TimetableEntry[]
   divisionSubjects DivisionSubject[]
   substituteAssignments SubstituteAssignment[]
+  teacherSubjectRestrictions TeacherSubjectClass[]
 
   @@unique([classId, name])
   @@map("divisions")
@@ -176,24 +205,51 @@ model Subject {
   tenantId         String
   name             String  // e.g., "Malayalam I", "English"
   code             String  // e.g., "MAL1", "ENG"
-  periodsPerWeek   Int     @default(1)
+  periodsPerWeek   Int     @default(1) // global default — can be overridden per class via ClassSubject
   isCore           Boolean @default(true)
   eveningPriority  Boolean @default(false)
   consecutiveSlots Int     @default(1) // 2 for IT Practical
   isLanguageVariant Boolean @default(false) // true for Sanskrit, Arabic, Urdu
   replacesSubjectId String? // ID of subject it replaces (e.g., Malayalam I)
 
+  // === Special placement rules ===
+  // fixedDay: 1=Mon ... 5=Fri, 6=Sat. Null = flexible.
+  fixedDay        Int?    // if set, subject is always placed on this weekday
+  // fixedSlot: "FIRST", "LAST", or "1"–"7". Null = flexible.
+  fixedSlot       String? // if set, subject is pinned to this slot number
+  // useClassTeacher: if true, the division's own class teacher is assigned
+  useClassTeacher Boolean @default(false)
+
   tenant          Tenant   @relation(fields: [tenantId], references: [id])
   replacesSubject Subject? @relation("LanguageVariant", fields: [replacesSubjectId], references: [id])
   variants        Subject[] @relation("LanguageVariant")
 
-  teacherMappings  TeacherSubject[]
-  timetableEntries TimetableEntry[]
-  divisionSubjects DivisionSubject[]
-  examResults      ExamResult[]
+  teacherMappings      TeacherSubject[]
+  timetableEntries     TimetableEntry[]
+  divisionSubjects     DivisionSubject[]
+  classSubjects        ClassSubject[]
+  teacherClassRestrictions TeacherSubjectClass[]
+  examResults          ExamResult[]
 
   @@unique([tenantId, code])
   @@map("subjects")
+}
+
+// Per-class override for subject configuration
+// Allows different classes to have different periods/week for the same subject.
+// If an override exists, it takes precedence over Subject.periodsPerWeek.
+model ClassSubject {
+  id               String @id @default(cuid())
+  classId          String
+  subjectId        String
+  periodsPerWeek   Int?   // null = use Subject default
+  consecutiveSlots Int?   // null = use Subject default
+
+  class   Class   @relation(fields: [classId], references: [id], onDelete: Cascade)
+  subject Subject @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+
+  @@unique([classId, subjectId])
+  @@map("class_subjects")
 }
 
 // Division-specific subject configuration
@@ -201,6 +257,7 @@ model DivisionSubject {
   id               String  @id @default(cuid())
   divisionId       String
   subjectId        String
+  excluded         Boolean @default(false) // if true, this subject is NOT taught to this division
   useLanguageVariant Boolean @default(false) // if true, some students use variant
   languageVariantSubjectId String? // which variant subject
 
