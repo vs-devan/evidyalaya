@@ -39,9 +39,71 @@ export default function SubstitutePage() {
     setAffectedSlots(slots);
   }, [absentTeacherId, date, timetable]);
 
-  function getFreeTeachers(slot: number) {
+  const slots = [1, 2, 3, 4, 5, 6, 7];
+
+  function getFreePeriodsCount(teacherId: string, currentSlotNumber?: number) {
     const dayOfWeek = new Date(date).getDay() || 7;
-    const busyTeacherIds = new Set(timetable.filter((e: any) => e.dayOfWeek === dayOfWeek && e.slotNumber === slot).map((e: any) => e.teacherId));
+    const busySlots = new Set<number>();
+
+    // 1. Regular timetable busy slots (excluding lunch break slot 5)
+    timetable.forEach((e: any) => {
+      if (e.teacherId === teacherId && e.dayOfWeek === dayOfWeek && e.slotNumber !== 5) {
+        busySlots.add(e.slotNumber);
+      }
+    });
+
+    // 2. Saved substitutions on this date where this teacher is the substitute (excluding lunch break)
+    subs.forEach((s: any) => {
+      if (s.substituteTeacherId === teacherId && s.originalSlotNumber !== 5) {
+        if (s.originalSlotNumber !== currentSlotNumber) {
+          busySlots.add(s.originalSlotNumber);
+        }
+      }
+    });
+
+    // 3. Unsaved substitutions in UI (excluding lunch break)
+    Object.entries(assignments).forEach(([key, subTeacherId]) => {
+      if (subTeacherId === teacherId) {
+        const [slotStr] = key.split('_');
+        const slotNum = parseInt(slotStr);
+        if (slotNum !== 5 && slotNum !== currentSlotNumber) {
+          busySlots.add(slotNum);
+        }
+      }
+    });
+
+    const teachingSlots = [1, 2, 3, 4, 6, 7];
+    return Math.max(0, teachingSlots.length - busySlots.size);
+  }
+
+  function getFreeTeachers(slot: number, divisionId?: string) {
+    const dayOfWeek = new Date(date).getDay() || 7;
+    
+    // Start with teachers busy in the regular timetable for this slot
+    const busyTeacherIds = new Set(
+      timetable
+        .filter((e: any) => e.dayOfWeek === dayOfWeek && e.slotNumber === slot)
+        .map((e: any) => e.teacherId)
+    );
+
+    // Add teachers who are busy due to other saved substitutions on this date for the same slot
+    subs.forEach((s: any) => {
+      if (s.originalSlotNumber === slot && s.substituteTeacherId) {
+        if (!divisionId || s.originalDivisionId !== divisionId) {
+          busyTeacherIds.add(s.substituteTeacherId);
+        }
+      }
+    });
+
+    // Add teachers who are busy due to other unsaved substitutions in this slot
+    Object.entries(assignments).forEach(([key, subTeacherId]) => {
+      const [slotStr, divId] = key.split('_');
+      const slotNum = parseInt(slotStr);
+      if (slotNum === slot && subTeacherId && (!divisionId || divId !== divisionId)) {
+        busyTeacherIds.add(subTeacherId);
+      }
+    });
+
     return teachers.filter((t: any) => !busyTeacherIds.has(t.id) && t.id !== absentTeacherId);
   }
 
@@ -94,7 +156,7 @@ export default function SubstitutePage() {
                 <tbody>
                   {affectedSlots.map((slot: any) => {
                     const key = `${slot.slotNumber}_${slot.divisionId}`;
-                    const freeTeachers = getFreeTeachers(slot.slotNumber);
+                    const freeTeachers = getFreeTeachers(slot.slotNumber, slot.divisionId);
                     return (
                       <tr key={key}>
                         <td>Period {slot.slotNumber}</td>
@@ -103,7 +165,14 @@ export default function SubstitutePage() {
                         <td>
                           <select className="form-select" value={assignments[key] || ''} onChange={e => setAssignments({ ...assignments, [key]: e.target.value })}>
                             <option value="">Select substitute...</option>
-                            {freeTeachers.map((t: any) => <option key={t.id} value={t.id}>{t.teacherCode} - {t.user?.name}</option>)}
+                            {freeTeachers.map((t: any) => {
+                              const freeCount = getFreePeriodsCount(t.id, slot.slotNumber);
+                              return (
+                                <option key={t.id} value={t.id}>
+                                  {t.teacherCode} - {t.user?.name} ({freeCount} free period{freeCount !== 1 ? 's' : ''} today)
+                                </option>
+                              );
+                            })}
                           </select>
                           <span className="form-hint">{freeTeachers.length} teachers available</span>
                         </td>
