@@ -5,6 +5,7 @@ import prisma from '@/lib/prisma';
 import { TimetableInput, DivisionInput } from '@/lib/timetable-engine';
 import { solveTimetable, ScoreBreakdown } from '@/lib/timetable-solver';
 import { repairTimetableGaps } from '@/lib/gemini';
+import { compare } from 'bcryptjs';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -75,6 +76,60 @@ export async function POST(req: NextRequest) {
       }
 
       try {
+        // ─── Phase 0: Lock Validation ────────────────────────────────────────
+        const currentTenant = await prisma.tenant.findUnique({
+          where: { id: tenantId },
+          select: { timetableLocked: true },
+        });
+
+        if (currentTenant?.timetableLocked) {
+          const { password } = body;
+          if (!password) {
+            emit({
+              phase: 'error',
+              pct: 0,
+              label: 'Generation Blocked',
+              detail: 'The timetable is locked. Please enter your admin password in the generation dialog to unlock and regenerate.',
+            });
+            controller.close();
+            return;
+          }
+
+          const adminUser = await prisma.user.findUnique({
+            where: { username: session.user.username },
+            select: { password: true },
+          });
+
+          if (!adminUser) {
+            emit({
+              phase: 'error',
+              pct: 0,
+              label: 'Verification Failed',
+              detail: 'Admin account not found.',
+            });
+            controller.close();
+            return;
+          }
+
+          const isValid = await compare(password, adminUser.password);
+          if (!isValid) {
+            emit({
+              phase: 'error',
+              pct: 0,
+              label: 'Incorrect Password',
+              detail: 'The admin password entered is incorrect.',
+            });
+            controller.close();
+            return;
+          }
+
+          // Auto-unlock on correct password
+          await prisma.tenant.update({
+            where: { id: tenantId },
+            data: { timetableLocked: false },
+          });
+        }
+
         // ─── Phase 1: Loading Data ───────────────────────────────────────────
         emit({ phase: 'loading_data', pct: 5, label: 'Loading school configuration…' });
 
@@ -82,7 +137,7 @@ export async function POST(req: NextRequest) {
           await Promise.all([
             prisma.tenant.findUnique({
               where: { id: tenantId },
-              select: { periodsPerDay: true, workingDays: true, morningPeriods: true },
+              select: { periodsPerDay: true, workingDays: true, morningPeriods: true, timetableLocked: true },
             }),
             prisma.subject.findMany({ where: { tenantId } }),
             prisma.class.findMany({

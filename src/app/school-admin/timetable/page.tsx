@@ -131,20 +131,37 @@ export default function TimetablePage() {
   const [issueFilter, setIssueFilter] = useState<'all' | 'error' | 'warning' | 'info'>('all');
   const [showAnalysis, setShowAnalysis] = useState(false);
 
+  // Locking states
+  const [locked, setLocked] = useState(false);
+  const [showPasswordModal, setShowPasswordModal] = useState(false);
+  const [passwordInput, setPasswordInput] = useState('');
+  const [passwordError, setPasswordError] = useState('');
+  const [passwordPurpose, setPasswordPurpose] = useState<'unlock_only' | 'unlock_and_generate'>('unlock_only');
+
   useEffect(() => { fetchAll(); }, []);
 
   async function fetchAll() {
     setLoading(true);
-    const [tRes, cRes] = await Promise.all([
+    const [tRes, cRes, lRes] = await Promise.all([
       fetch('/api/timetable').then(r => r.json()),
       fetch('/api/classes').then(r => r.json()),
+      fetch('/api/timetable/lock').then(r => r.json()).catch(() => ({ success: false, locked: false })),
     ]);
     if (tRes.success) setEntries(tRes.data);
     if (cRes.success) setClasses(cRes.data);
+    if (lRes.success) setLocked(lRes.locked);
     setLoading(false);
   }
 
-  async function generateTimetable() {
+  async function generateTimetable(password?: string) {
+    if (locked && !password) {
+      setPasswordPurpose('unlock_and_generate');
+      setPasswordInput('');
+      setPasswordError('');
+      setShowPasswordModal(true);
+      return;
+    }
+
     if (!confirm('This will regenerate the entire timetable. Continue?')) return;
     setGenerating(true);
     setResult(null);
@@ -163,7 +180,7 @@ export default function TimetablePage() {
       const res = await fetch('/api/timetable/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ constraints: activeConstraints }),
+        body: JSON.stringify({ constraints: activeConstraints, password }),
       });
 
       if (!res.body) throw new Error('No response body');
@@ -213,6 +230,54 @@ export default function TimetablePage() {
     }
 
     setGenerating(false);
+  }
+
+  async function handleLockToggle() {
+    if (locked) {
+      setPasswordPurpose('unlock_only');
+      setPasswordInput('');
+      setPasswordError('');
+      setShowPasswordModal(true);
+    } else {
+      try {
+        const res = await fetch('/api/timetable/lock', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'lock' }),
+        });
+        const data = await res.json();
+        if (data.success) setLocked(true);
+      } catch (err) {
+        console.error('Failed to lock:', err);
+      }
+    }
+  }
+
+  async function handlePasswordSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setPasswordError('');
+
+    if (passwordPurpose === 'unlock_only') {
+      try {
+        const res = await fetch('/api/timetable/lock', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'unlock', password: passwordInput }),
+        });
+        const data = await res.json();
+        if (data.success) {
+          setLocked(false);
+          setShowPasswordModal(false);
+        } else {
+          setPasswordError(data.error || 'Incorrect admin password.');
+        }
+      } catch (err) {
+        setPasswordError('Network error. Please try again.');
+      }
+    } else if (passwordPurpose === 'unlock_and_generate') {
+      setShowPasswordModal(false);
+      generateTimetable(passwordInput);
+    }
   }
 
   async function runAnalysis() {
@@ -302,8 +367,15 @@ export default function TimetablePage() {
             </button>
           )}
           <button
+            className={`btn ${locked ? 'btn-danger' : 'btn-secondary'}`}
+            onClick={handleLockToggle}
+            id="btn-lock-timetable"
+          >
+            {locked ? '🔒 Locked' : '🔓 Unlocked'}
+          </button>
+          <button
             className="btn btn-accent"
-            onClick={generateTimetable}
+            onClick={() => generateTimetable()}
             disabled={generating}
             id="btn-generate-timetable"
           >
@@ -822,6 +894,50 @@ export default function TimetablePage() {
         )}
       </div>
 
+      {/* Admin Password Modal for Locking/Generation */}
+      {showPasswordModal && (
+        <div className="modal-overlay" onClick={() => setShowPasswordModal(false)}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>
+                {passwordPurpose === 'unlock_and_generate'
+                  ? '🔒 Timetable Locked — Verify Password'
+                  : '🔓 Unlock Timetable'}
+              </h3>
+              <button className="btn btn-ghost btn-icon" onClick={() => setShowPasswordModal(false)}>✕</button>
+            </div>
+            <form onSubmit={handlePasswordSubmit}>
+              <div className="modal-body">
+                <p style={{ fontSize: 13, color: 'var(--gray-600)', marginBottom: 16 }}>
+                  {passwordPurpose === 'unlock_and_generate'
+                    ? 'Regeneration requires administrative authorization. Please enter your account password to unlock the timetable and proceed with generation.'
+                    : 'Please enter your account password to unlock the timetable configuration.'}
+                </p>
+                <div className="form-group">
+                  <label className="form-label">Admin Password</label>
+                  <input
+                    className="form-input"
+                    type="password"
+                    required
+                    placeholder="Enter password..."
+                    value={passwordInput}
+                    onChange={e => setPasswordInput(e.target.value)}
+                    autoFocus
+                  />
+                  {passwordError && <p className="form-error" style={{ marginTop: 8 }}>{passwordError}</p>}
+                </div>
+              </div>
+              <div className="modal-footer">
+                <button type="button" className="btn btn-secondary" onClick={() => setShowPasswordModal(false)}>Cancel</button>
+                <button type="submit" className="btn btn-primary">
+                  {passwordPurpose === 'unlock_and_generate' ? 'Unlock & Generate' : 'Unlock'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
       <style>{timetableStyles}</style>
     </DashboardLayout>
   );
@@ -836,8 +952,72 @@ function InvertedTimetableGrid({ div, days, slots, getEntry }: {
   slots: number[];
   getEntry: (divId: string, day: number, slot: number) => any;
 }) {
+  const [isMobile, setIsMobile] = useState(false);
+  const [activeDay, setActiveDay] = useState(1);
+
+  useEffect(() => {
+    const checkMobile = () => setIsMobile(window.innerWidth <= 768);
+    checkMobile();
+    window.addEventListener('resize', checkMobile);
+    return () => window.removeEventListener('resize', checkMobile);
+  }, []);
+
   const morningSlots = slots.filter(s => s <= 4);
   const afternoonSlots = slots.filter(s => s > 4);
+
+  if (isMobile) {
+    return (
+      <div className="tt-mobile-timeline">
+        {/* Day Selector Pills */}
+        <div className="tt-mobile-days">
+          {days.map(day => (
+            <button
+              key={day}
+              type="button"
+              className={`tt-mobile-day-btn ${activeDay === day ? 'active' : ''}`}
+              onClick={() => setActiveDay(day)}
+            >
+              {['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][day - 1]}
+            </button>
+          ))}
+        </div>
+
+        {/* Vertical Slots List */}
+        <div className="tt-mobile-slots">
+          {slots.map(slot => {
+            if (slot === 5) {
+              return (
+                <div key="lunch-break" className="tt-mobile-slot-card lunch">
+                  <div className="tt-slot-time">🍴 Break</div>
+                  <div className="tt-slot-info">Lunch Break</div>
+                </div>
+              );
+            }
+
+            const entry = getEntry(div.id, activeDay, slot);
+
+            return (
+              <div key={slot} className={`tt-mobile-slot-card ${entry ? 'filled' : 'empty'}`}>
+                <div className="tt-slot-time">Period {slot}</div>
+                <div className="tt-slot-info">
+                  {entry ? (
+                    <>
+                      <div className="tt-slot-subject">{entry.subject?.name} ({entry.subject?.code})</div>
+                      <div className="tt-slot-teacher">
+                        👩‍🏫 {entry.teacher?.user?.name || entry.teacher?.teacherCode}
+                      </div>
+                    </>
+                  ) : (
+                    <div className="tt-slot-empty">Free Period</div>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="tt-inverted-wrapper">
@@ -917,8 +1097,80 @@ function DailyInvertedGrid({ divisions, slots, selectedDay, getEntry }: {
   selectedDay: number;
   getEntry: (divId: string, day: number, slot: number) => any;
 }) {
+  const [isMobile, setIsMobile] = useState(false);
+  const [activeDivision, setActiveDivision] = useState(divisions[0]?.id || '');
+
+  useEffect(() => {
+    const checkMobile = () => setIsMobile(window.innerWidth <= 768);
+    checkMobile();
+    window.addEventListener('resize', checkMobile);
+    return () => window.removeEventListener('resize', checkMobile);
+  }, []);
+
+  useEffect(() => {
+    if (divisions.length > 0 && !activeDivision) {
+      setActiveDivision(divisions[0].id);
+    }
+  }, [divisions]);
+
   const morningSlots = slots.filter(s => s <= 4);
   const afternoonSlots = slots.filter(s => s > 4);
+
+  if (isMobile) {
+    const selectedDiv = divisions.find(d => d.id === activeDivision);
+    return (
+      <div className="tt-mobile-timeline" style={{ padding: 12 }}>
+        {/* Division Selector */}
+        <div className="form-group" style={{ marginBottom: 16 }}>
+          <label className="form-label">Select Division</label>
+          <select
+            className="form-select"
+            value={activeDivision}
+            onChange={e => setActiveDivision(e.target.value)}
+          >
+            {divisions.map(d => (
+              <option key={d.id} value={d.id}>Class {d.label}</option>
+            ))}
+          </select>
+        </div>
+
+        {selectedDiv && (
+          <div className="tt-mobile-slots">
+            {slots.map(slot => {
+              if (slot === 5) {
+                return (
+                  <div key="lunch-break" className="tt-mobile-slot-card lunch">
+                    <div className="tt-slot-time">🍴 Break</div>
+                    <div className="tt-slot-info">Lunch Break</div>
+                  </div>
+                );
+              }
+
+              const entry = getEntry(selectedDiv.id, selectedDay, slot);
+
+              return (
+                <div key={slot} className={`tt-mobile-slot-card ${entry ? 'filled' : 'empty'}`}>
+                  <div className="tt-slot-time">Period {slot}</div>
+                  <div className="tt-slot-info">
+                    {entry ? (
+                      <>
+                        <div className="tt-slot-subject">{entry.subject?.name} ({entry.subject?.code})</div>
+                        <div className="tt-slot-teacher">
+                          👩‍🏫 {entry.teacher?.user?.name || entry.teacher?.teacherCode}
+                        </div>
+                      </>
+                    ) : (
+                      <div className="tt-slot-empty">Free Period</div>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className="tt-inverted-wrapper">

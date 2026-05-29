@@ -26,6 +26,7 @@ model Tenant {
   periodsPerDay  Int      @default(7)  // Total slots per school day
   workingDays    Int      @default(5)  // 5 = Mon–Fri, 6 = Mon–Sat
   morningPeriods Int      @default(4)  // Periods before lunch (core priority zone)
+  timetableLocked Boolean  @default(false)
 
   users                User[]
   classes              Class[]

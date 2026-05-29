@@ -502,3 +502,132 @@ input, select, textarea { font-family: inherit; }
   .card { box-shadow: none; border: 1px solid #ddd; }
   body { background: #fff; }
 }
+
+/* ===== RESPONSIVE MOBILE TIMETABLE TIMELINE ===== */
+.tt-mobile-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+}
+
+.tt-mobile-days {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding: 4px 2px;
+  scroll-behavior: smooth;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none; /* Hide scrollbar for Firefox */
+}
+
+.tt-mobile-days::-webkit-scrollbar {
+  display: none; /* Hide scrollbar for Chrome/Safari */
+}
+
+.tt-mobile-day-btn {
+  flex: 1;
+  min-width: 60px;
+  padding: 10px 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-color);
+  background: var(--bg-card);
+  color: var(--gray-600);
+  font-size: 13px;
+  font-weight: 600;
+  text-align: center;
+  transition: all var(--transition);
+  cursor: pointer;
+}
+
+.tt-mobile-day-btn:hover {
+  background: var(--gray-50);
+}
+
+.tt-mobile-day-btn.active {
+  background: var(--primary-600);
+  color: #fff;
+  border-color: var(--primary-600);
+  box-shadow: var(--shadow-sm);
+}
+
+.tt-mobile-slots {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.tt-mobile-slot-card {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 16px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-color);
+  background: var(--bg-card);
+  transition: all var(--transition);
+  box-shadow: var(--shadow-sm);
+}
+
+.tt-mobile-slot-card.filled {
+  border-left: 4px solid var(--primary-500);
+}
+
+.tt-mobile-slot-card.empty {
+  border-left: 4px solid var(--gray-300);
+  background: var(--gray-50);
+  opacity: 0.85;
+}
+
+.tt-mobile-slot-card.lunch {
+  border-left: 4px solid var(--accent-500);
+  background: var(--accent-50);
+}
+
+.tt-slot-time {
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+  color: var(--primary-700);
+  background: var(--primary-50);
+  padding: 4px 8px;
+  border-radius: 4px;
+  min-width: 72px;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+.tt-mobile-slot-card.empty .tt-slot-time {
+  color: var(--gray-600);
+  background: var(--gray-200);
+}
+
+.tt-mobile-slot-card.lunch .tt-slot-time {
+  color: var(--accent-700);
+  background: var(--accent-100);
+}
+
+.tt-slot-info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.tt-slot-subject {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--gray-900);
+}
+
+.tt-slot-teacher {
+  font-size: 12px;
+  color: var(--gray-500);
+  font-weight: 500;
+}
+
+.tt-slot-empty {
+  font-size: 13.5px;
+  color: var(--gray-400);
+  font-style: italic;
+}

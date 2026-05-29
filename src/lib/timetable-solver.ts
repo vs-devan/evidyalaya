@@ -1020,6 +1020,9 @@ function runSAPass(state: State, iterations: number): { score: number; improved:
       currentScore = newScore;
       stallCount = 0;
       if (newScore > bestScore) bestScore = newScore;
+      if (newScore >= 100) {
+        break;
+      }
     } else {
       // Accept degradation with probability exp(delta / temp)
       if (Math.random() < Math.exp(delta / temp)) {
@@ -1102,6 +1105,11 @@ export async function solveTimetable(
     score: initScore,
   };
 
+  let lastBestScore = initScore.total;
+  let noImprovementPasses = 0;
+  const PATIENCE = 2;
+  const THRESHOLD = 0.05;
+
   for (let pass = 1; pass <= SA_PASSES; pass++) {
     const pct = 35 + Math.round((pass / SA_PASSES) * 45);
     emit('annealing', pct - 8,
@@ -1125,6 +1133,26 @@ export async function solveTimetable(
 
     if (score.total > bestState.score.total) {
       bestState = { asgn: [...state.asgn], score };
+    }
+
+    // Early exit if we hit perfect score
+    if (bestState.score.total >= 100) {
+      emit('annealing', pct, `Perfect score achieved (100.0/100)! Stopping early.`, `Optimization complete.`);
+      break;
+    }
+
+    // Check for stabilization (gradient descent-like patience)
+    const improvement = bestState.score.total - lastBestScore;
+    if (improvement < THRESHOLD) {
+      noImprovementPasses++;
+    } else {
+      noImprovementPasses = 0;
+      lastBestScore = bestState.score.total;
+    }
+
+    if (noImprovementPasses >= PATIENCE) {
+      emit('annealing', pct, `Score stabilized (no improvement for ${PATIENCE} passes). Stopping early.`, `Optimization complete.`);
+      break;
     }
 
     await yieldControl();
