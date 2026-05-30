@@ -60,7 +60,7 @@ export default function SuperAdminUsers() {
         <div className="card" style={{ marginBottom: 16 }}>
           <div className="card-body">
             <label className="form-label">Select Tenant</label>
-            <select className="form-select" style={{ width: 300 }} value={selectedTenant} onChange={e => fetchUsers(e.target.value)}>
+            <select className="form-select" style={{ maxWidth: '100%', width: 300 }} value={selectedTenant} onChange={e => fetchUsers(e.target.value)}>
               <option value="">Choose a tenant...</option>
               {tenants.map(t => <option key={t.id} value={t.id}>{t.name} ({t.code})</option>)}
             </select>

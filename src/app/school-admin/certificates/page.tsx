@@ -42,7 +42,9 @@ export default function CertificatesPage() {
     <DashboardLayout>
       <div className="page-header">
         <div><h2>Certificates</h2><p>Generate certificates with AI assistance</p></div>
-        <button className="btn btn-primary" onClick={() => setShowModal(true)}>+ Generate Certificate</button>
+        <div className="page-header-actions">
+          <button className="btn btn-primary" onClick={() => setShowModal(true)}>+ Generate Certificate</button>
+        </div>
       </div>
       <div className="page-body">
         <div className="card">

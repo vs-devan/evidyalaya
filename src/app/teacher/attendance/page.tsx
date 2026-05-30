@@ -110,7 +110,9 @@ export default function TeacherAttendance() {
           <h2>Attendance</h2>
           <p>Mark daily attendance for your class</p>
         </div>
-        <input className="form-input" type="date" value={date} onChange={e => setDate(e.target.value)} style={{ width: 160 }} />
+        <div className="page-header-actions">
+          <input className="form-input" type="date" value={date} onChange={e => setDate(e.target.value)} style={{ minWidth: 140 }} />
+        </div>
       </div>
       <div className="page-body">
         {message && (
@@ -147,12 +149,12 @@ export default function TeacherAttendance() {
             <div className="card">
               <div className="card-header">
                 <h3>Students ({students.length})</h3>
-                <div style={{ display: 'flex', gap: 8 }}>
+                <div className="page-header-actions" style={{ marginTop: 4 }}>
                   <button className="btn btn-secondary btn-sm" onClick={handleDownloadTemplate}>
-                    Download Template
+                    ⬇ Template
                   </button>
                   <button className="btn btn-secondary btn-sm" onClick={() => fileInputRef.current?.click()}>
-                    Upload Excel
+                    ⬆ Excel
                   </button>
                   <input
                     type="file"
@@ -161,8 +163,8 @@ export default function TeacherAttendance() {
                     accept=".xlsx"
                     onChange={handleUploadExcel}
                   />
-                  <button className="btn btn-primary" onClick={saveAttendance} disabled={saving}>
-                    {saving ? 'Saving...' : 'Save'}
+                  <button className="btn btn-primary btn-sm" onClick={saveAttendance} disabled={saving}>
+                    {saving ? 'Saving...' : '💾 Save'}
                   </button>
                 </div>
               </div>

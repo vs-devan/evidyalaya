@@ -52,6 +52,7 @@ const BUILTIN_CONSTRAINTS: Constraint[] = [
   { id: 'c_no_span_lunch', label: 'Consecutive-slot subjects must not span across the lunch break', category: 'Consecutive Slots', enabled: true, source: 'builtin' },
   // Language variants
   { id: 'c_lang_variant', label: 'Language variant subjects (Sanskrit, Arabic, Urdu) replace Malayalam I — only one is scheduled per division', category: 'Language Variants', enabled: true, source: 'builtin' },
+  { id: 'c_mal1_san_ara_parallel', label: 'Only Division A has Sanskrit and Arabic students; when Mal I is taught, Sanskrit and Arabic run simultaneously in parallel for Division A students (same slot, same teacher assigns)', category: 'Language Variants', enabled: true, source: 'builtin' },
   // Fixed placement
   { id: 'c_fixed_day', label: 'Fixed-day subjects are pinned to their designated weekday (e.g., Recreation = Friday)', category: 'Special Rules', enabled: true, source: 'builtin' },
   { id: 'c_fixed_slot', label: 'Fixed-slot subjects are pinned to their designated period (FIRST, LAST, or a specific slot number)', category: 'Special Rules', enabled: true, source: 'builtin' },
@@ -120,6 +121,9 @@ export default function TimetablePage() {
   const [result, setResult] = useState<any>(null);
   const [genProgress, setGenProgress] = useState<GenProgress | null>(null);
 
+  // Variant teacher map: subjectId → teacherCode (for SAN/ARA parallel display)
+  const [variantTeacherMap, setVariantTeacherMap] = useState<Record<string, string>>({});
+
   // Constraints state
   const [constraints, setConstraints] = useState<Constraint[]>(BUILTIN_CONSTRAINTS);
   const [aiPrompt, setAiPrompt] = useState('');
@@ -142,14 +146,29 @@ export default function TimetablePage() {
 
   async function fetchAll() {
     setLoading(true);
-    const [tRes, cRes, lRes] = await Promise.all([
+    const [tRes, cRes, lRes, tchRes] = await Promise.all([
       fetch('/api/timetable').then(r => r.json()),
       fetch('/api/classes').then(r => r.json()),
       fetch('/api/timetable/lock').then(r => r.json()).catch(() => ({ success: false, locked: false })),
+      fetch('/api/teachers').then(r => r.json()),
     ]);
     if (tRes.success) setEntries(tRes.data);
     if (cRes.success) setClasses(cRes.data);
     if (lRes.success) setLocked(lRes.locked);
+
+    // Build variant teacher map: subjectId → teacherCode
+    // For each teacher that teaches a language variant subject, record their code
+    if (tchRes.success && Array.isArray(tchRes.data)) {
+      const map: Record<string, string> = {};
+      for (const t of tchRes.data) {
+        for (const sm of (t.subjectMappings || [])) {
+          // We'll use first teacher found per subject as the representative
+          if (!map[sm.subjectId]) map[sm.subjectId] = t.teacherCode;
+        }
+      }
+      setVariantTeacherMap(map);
+    }
+
     setLoading(false);
   }
 
@@ -355,7 +374,7 @@ export default function TimetablePage() {
           <h2>Timetable</h2>
           <p>Generate, view and manage weekly timetables</p>
         </div>
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        <div className="page-header-actions">
           {entries.length > 0 && (
             <button
               className="btn btn-secondary"
@@ -363,7 +382,7 @@ export default function TimetablePage() {
               disabled={analyzing}
               id="btn-analyze-timetable"
             >
-              {analyzing ? '⏳ Analyzing...' : '🔍 Analyze Issues'}
+              {analyzing ? '⏳' : '🔍'} Analyze
             </button>
           )}
           <button
@@ -379,7 +398,7 @@ export default function TimetablePage() {
             disabled={generating}
             id="btn-generate-timetable"
           >
-            {generating ? '⏳ Generating...' : '🔄 Generate Timetable'}
+            {generating ? '⏳ Generating...' : '🔄 Generate'}
           </button>
           <button className="btn btn-secondary" onClick={() => window.print()} id="btn-print-timetable">
             🖨️ Print
@@ -740,6 +759,7 @@ export default function TimetablePage() {
                       days={days}
                       slots={slots}
                       getEntry={getEntry}
+                      variantTeacherMap={variantTeacherMap}
                     />
                   </div>
                 </div>
@@ -778,6 +798,7 @@ export default function TimetablePage() {
                     slots={slots}
                     selectedDay={selectedDay}
                     getEntry={getEntry}
+                    variantTeacherMap={variantTeacherMap}
                   />
                 </div>
               </div>
@@ -946,11 +967,32 @@ export default function TimetablePage() {
 // ─── Inverted Timetable Grid (Weekly View) ────────────────────────────────
 // Layout: Rows = Days, Columns = Periods
 
-function InvertedTimetableGrid({ div, days, slots, getEntry }: {
+// ─── Helper: build parallel cell label for MAL1/SAN/ARA ────────────────────
+// For Division A: when subject has language variants, show combined code + teachers
+function buildParallelCell(entry: any, divisionName: string, variantTeacherMap: Record<string, string>) {
+  if (!entry) return null;
+  // Only Division A gets the parallel Sanskrit/Arabic treatment
+  if (divisionName !== 'A') return null;
+  // Subject must have language variants and not itself be a language variant
+  if (entry.subject?.isLanguageVariant) return null;
+  const variants: any[] = entry.subject?.variants ?? [];
+  if (variants.length === 0) return null;
+
+  // Build combined code: MAL1/SAN/ARA
+  const codes = [entry.subject.code, ...variants.map((v: any) => v.code)];
+  const teacherCodes = [
+    entry.teacher?.teacherCode,
+    ...variants.map((v: any) => variantTeacherMap[v.id] ?? '?'),
+  ];
+  return { codes, teacherCodes };
+}
+
+function InvertedTimetableGrid({ div, days, slots, getEntry, variantTeacherMap }: {
   div: any;
   days: number[];
   slots: number[];
   getEntry: (divId: string, day: number, slot: number) => any;
+  variantTeacherMap: Record<string, string>;
 }) {
   const [isMobile, setIsMobile] = useState(false);
   const [activeDay, setActiveDay] = useState(1);
@@ -995,18 +1037,30 @@ function InvertedTimetableGrid({ div, days, slots, getEntry }: {
             }
 
             const entry = getEntry(div.id, activeDay, slot);
+            const parallel = buildParallelCell(entry, div.name, variantTeacherMap);
 
             return (
               <div key={slot} className={`tt-mobile-slot-card ${entry ? 'filled' : 'empty'}`}>
                 <div className="tt-slot-time">Period {slot}</div>
                 <div className="tt-slot-info">
                   {entry ? (
-                    <>
-                      <div className="tt-slot-subject">{entry.subject?.name} ({entry.subject?.code})</div>
-                      <div className="tt-slot-teacher">
-                        👩‍🏫 {entry.teacher?.user?.name || entry.teacher?.teacherCode}
-                      </div>
-                    </>
+                    parallel ? (
+                      <>
+                        <div className="tt-slot-subject tt-parallel-subject">{parallel.codes.join('/')}</div>
+                        <div className="tt-slot-teacher">
+                          {parallel.teacherCodes.map((c, i) => (
+                            <span key={i} className="tt-parallel-code">{c}</span>
+                          ))}
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <div className="tt-slot-subject">{entry.subject?.name} ({entry.subject?.code})</div>
+                        <div className="tt-slot-teacher">
+                          👩‍🏫 {entry.teacher?.user?.name || entry.teacher?.teacherCode}
+                        </div>
+                      </>
+                    )
                   ) : (
                     <div className="tt-slot-empty">Free Period</div>
                   )}
@@ -1049,13 +1103,25 @@ function InvertedTimetableGrid({ div, days, slots, getEntry }: {
               </td>
               {morningSlots.map(slot => {
                 const entry = getEntry(div.id, day, slot);
+                const parallel = buildParallelCell(entry, div.name, variantTeacherMap);
                 return (
                   <td key={slot} className={`tt-entry-cell ${entry ? 'filled' : 'empty'}`}>
                     {entry ? (
-                      <div className="tt-entry-content">
-                        <span className="tt-subject">{entry.subject?.code || entry.subject?.name}</span>
-                        <span className="tt-teacher">{entry.teacher?.teacherCode}</span>
-                      </div>
+                      parallel ? (
+                        <div className="tt-entry-content tt-parallel-cell">
+                          <span className="tt-subject tt-parallel-label">{parallel.codes.join('/')}</span>
+                          <div className="tt-parallel-teachers">
+                            {parallel.teacherCodes.map((c, i) => (
+                              <span key={i} className="tt-teacher">{c}</span>
+                            ))}
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="tt-entry-content">
+                          <span className="tt-subject">{entry.subject?.code || entry.subject?.name}</span>
+                          <span className="tt-teacher">{entry.teacher?.teacherCode}</span>
+                        </div>
+                      )
                     ) : (
                       <span className="tt-empty-mark">—</span>
                     )}
@@ -1067,13 +1133,25 @@ function InvertedTimetableGrid({ div, days, slots, getEntry }: {
               </td>
               {afternoonSlots.map(slot => {
                 const entry = getEntry(div.id, day, slot);
+                const parallel = buildParallelCell(entry, div.name, variantTeacherMap);
                 return (
                   <td key={slot} className={`tt-entry-cell tt-pm ${entry ? 'filled' : 'empty'}`}>
                     {entry ? (
-                      <div className="tt-entry-content">
-                        <span className="tt-subject">{entry.subject?.code || entry.subject?.name}</span>
-                        <span className="tt-teacher">{entry.teacher?.teacherCode}</span>
-                      </div>
+                      parallel ? (
+                        <div className="tt-entry-content tt-parallel-cell">
+                          <span className="tt-subject tt-parallel-label">{parallel.codes.join('/')}</span>
+                          <div className="tt-parallel-teachers">
+                            {parallel.teacherCodes.map((c, i) => (
+                              <span key={i} className="tt-teacher">{c}</span>
+                            ))}
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="tt-entry-content">
+                          <span className="tt-subject">{entry.subject?.code || entry.subject?.name}</span>
+                          <span className="tt-teacher">{entry.teacher?.teacherCode}</span>
+                        </div>
+                      )
                     ) : (
                       <span className="tt-empty-mark">—</span>
                     )}
@@ -1091,11 +1169,12 @@ function InvertedTimetableGrid({ div, days, slots, getEntry }: {
 // ─── Daily Inverted Grid ─────────────────────────────────────────────────
 // Layout: Rows = Divisions, Columns = Periods
 
-function DailyInvertedGrid({ divisions, slots, selectedDay, getEntry }: {
+function DailyInvertedGrid({ divisions, slots, selectedDay, getEntry, variantTeacherMap }: {
   divisions: any[];
   slots: number[];
   selectedDay: number;
   getEntry: (divId: string, day: number, slot: number) => any;
+  variantTeacherMap: Record<string, string>;
 }) {
   const [isMobile, setIsMobile] = useState(false);
   const [activeDivision, setActiveDivision] = useState(divisions[0]?.id || '');
@@ -1147,18 +1226,30 @@ function DailyInvertedGrid({ divisions, slots, selectedDay, getEntry }: {
               }
 
               const entry = getEntry(selectedDiv.id, selectedDay, slot);
+              const parallel = buildParallelCell(entry, selectedDiv.name, variantTeacherMap);
 
               return (
                 <div key={slot} className={`tt-mobile-slot-card ${entry ? 'filled' : 'empty'}`}>
                   <div className="tt-slot-time">Period {slot}</div>
                   <div className="tt-slot-info">
                     {entry ? (
-                      <>
-                        <div className="tt-slot-subject">{entry.subject?.name} ({entry.subject?.code})</div>
-                        <div className="tt-slot-teacher">
-                          👩‍🏫 {entry.teacher?.user?.name || entry.teacher?.teacherCode}
-                        </div>
-                      </>
+                      parallel ? (
+                        <>
+                          <div className="tt-slot-subject tt-parallel-subject">{parallel.codes.join('/')}</div>
+                          <div className="tt-slot-teacher">
+                            {parallel.teacherCodes.map((c, i) => (
+                              <span key={i} className="tt-parallel-code">{c}</span>
+                            ))}
+                          </div>
+                        </>
+                      ) : (
+                        <>
+                          <div className="tt-slot-subject">{entry.subject?.name} ({entry.subject?.code})</div>
+                          <div className="tt-slot-teacher">
+                            👩‍🏫 {entry.teacher?.user?.name || entry.teacher?.teacherCode}
+                          </div>
+                        </>
+                      )
                     ) : (
                       <div className="tt-slot-empty">Free Period</div>
                     )}
@@ -1202,13 +1293,25 @@ function DailyInvertedGrid({ divisions, slots, selectedDay, getEntry }: {
               </td>
               {morningSlots.map(slot => {
                 const entry = getEntry(div.id, selectedDay, slot);
+                const parallel = buildParallelCell(entry, div.name, variantTeacherMap);
                 return (
                   <td key={slot} className={`tt-entry-cell ${entry ? 'filled' : 'empty'}`}>
                     {entry ? (
-                      <div className="tt-entry-content">
-                        <span className="tt-subject">{entry.subject?.code || entry.subject?.name}</span>
-                        <span className="tt-teacher">{entry.teacher?.teacherCode}</span>
-                      </div>
+                      parallel ? (
+                        <div className="tt-entry-content tt-parallel-cell">
+                          <span className="tt-subject tt-parallel-label">{parallel.codes.join('/')}</span>
+                          <div className="tt-parallel-teachers">
+                            {parallel.teacherCodes.map((c, i) => (
+                              <span key={i} className="tt-teacher">{c}</span>
+                            ))}
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="tt-entry-content">
+                          <span className="tt-subject">{entry.subject?.code || entry.subject?.name}</span>
+                          <span className="tt-teacher">{entry.teacher?.teacherCode}</span>
+                        </div>
+                      )
                     ) : (
                       <span className="tt-empty-mark">—</span>
                     )}
@@ -1220,13 +1323,25 @@ function DailyInvertedGrid({ divisions, slots, selectedDay, getEntry }: {
               </td>
               {afternoonSlots.map(slot => {
                 const entry = getEntry(div.id, selectedDay, slot);
+                const parallel = buildParallelCell(entry, div.name, variantTeacherMap);
                 return (
                   <td key={slot} className={`tt-entry-cell tt-pm ${entry ? 'filled' : 'empty'}`}>
                     {entry ? (
-                      <div className="tt-entry-content">
-                        <span className="tt-subject">{entry.subject?.code || entry.subject?.name}</span>
-                        <span className="tt-teacher">{entry.teacher?.teacherCode}</span>
-                      </div>
+                      parallel ? (
+                        <div className="tt-entry-content tt-parallel-cell">
+                          <span className="tt-subject tt-parallel-label">{parallel.codes.join('/')}</span>
+                          <div className="tt-parallel-teachers">
+                            {parallel.teacherCodes.map((c, i) => (
+                              <span key={i} className="tt-teacher">{c}</span>
+                            ))}
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="tt-entry-content">
+                          <span className="tt-subject">{entry.subject?.code || entry.subject?.name}</span>
+                          <span className="tt-teacher">{entry.teacher?.teacherCode}</span>
+                        </div>
+                      )
                     ) : (
                       <span className="tt-empty-mark">—</span>
                     )}
@@ -1433,6 +1548,45 @@ const timetableStyles = `
 }
 .tt-empty-mark { color: var(--gray-300); font-size: 16px; }
 
+/* ── Parallel MAL1/SAN/ARA cell ── */
+.tt-parallel-cell {
+  align-items: center;
+}
+.tt-parallel-label {
+  font-size: 11px !important;
+  font-weight: 800 !important;
+  letter-spacing: .3px;
+  color: var(--primary-700) !important;
+  background: linear-gradient(135deg, var(--primary-50), #e0f2fe);
+  border: 1px solid var(--primary-200);
+  border-radius: 4px;
+  padding: 2px 5px;
+  text-align: center;
+  line-height: 1.3;
+}
+.tt-parallel-teachers {
+  display: flex; flex-wrap: wrap; gap: 2px; justify-content: center;
+  margin-top: 1px;
+}
+/* Mobile parallel */
+.tt-parallel-subject {
+  font-weight: 800;
+  font-size: 14px;
+  color: var(--primary-700);
+  letter-spacing: .5px;
+}
+.tt-parallel-code {
+  display: inline-flex;
+  align-items: center;
+  background: var(--primary-100);
+  color: var(--primary-800);
+  font-size: 11px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 3px;
+  margin: 0 2px;
+}
+
 .tt-lunch-cell {
   background: var(--accent-50);
   color: var(--accent-600);
@@ -1545,6 +1699,27 @@ const timetableStyles = `
   font-size: 13px; color: var(--gray-600); flex-wrap: wrap;
 }
 
+/* ── Tablet ── */
+@media (max-width: 1024px) {
+  .tt-constraints-grid { grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
+}
+
+/* ── Mobile responsive for timetable ── */
+@media (max-width: 640px) {
+  .tt-inverted-wrapper { border-radius: 0; }
+  .tt-corner-cell { min-width: 80px; font-size: 9px; padding: 8px 10px; }
+  .tt-period-header { min-width: 72px; padding: 6px 3px; }
+  .tt-period-num { font-size: 12px; }
+  .tt-period-label { display: none; }
+  .tt-day-header { padding: 8px 10px; }
+  .tt-day-name { font-size: 11px; }
+  .tt-entry-cell { padding: 6px 4px; }
+  .tt-subject { font-size: 11px; }
+  .tt-parallel-label { font-size: 9px !important; letter-spacing: 0; }
+  .tt-parallel-teachers .tt-teacher { font-size: 9px; padding: 0 3px; }
+  .tt-lunch-cell { font-size: 9px; }
+}
+
 /* ── Print ── */
 @media print {
   .tt-analysis-panel, .tt-conditions, .tabs,
@@ -1552,5 +1727,6 @@ const timetableStyles = `
   .tt-inverted-table { font-size: 10px; }
   .tt-period-header.tt-morning { background: #2d6a4f !important; -webkit-print-color-adjust: exact; }
   .tt-period-header.tt-afternoon { background: #1e5c42 !important; -webkit-print-color-adjust: exact; }
+  .tt-parallel-label { background: #e0f2fe !important; -webkit-print-color-adjust: exact; color: #004d40 !important; }
 }
 `;

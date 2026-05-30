@@ -132,12 +132,12 @@ export default function ResultsPage() {
           <h2>Exam Results</h2>
           <p>Upload and manage exam results</p>
         </div>
-        <div style={{ display: 'flex', gap: 12 }}>
-          <select className="form-select" style={{ width: 200 }} value={selectedDiv} onChange={e => setSelectedDiv(e.target.value)}>
+        <div className="page-header-actions">
+          <select className="form-select" style={{ minWidth: 150 }} value={selectedDiv} onChange={e => setSelectedDiv(e.target.value)}>
             <option value="">Select Division...</option>
             {allDivisions.map((d: any) => <option key={d.id} value={d.id}>Class {d.className}{d.name}</option>)}
           </select>
-          <select className="form-select" style={{ width: 160 }} value={examName} onChange={e => setExamName(e.target.value)}>
+          <select className="form-select" style={{ minWidth: 130 }} value={examName} onChange={e => setExamName(e.target.value)}>
             <option>First Term</option>
             <option>Mid Term</option>
             <option>Annual</option>
@@ -162,22 +162,13 @@ export default function ResultsPage() {
           <div className="card">
             <div className="card-header">
               <h3>Results - {examName}</h3>
-              <div style={{ display: 'flex', gap: 8 }}>
-                <button className="btn btn-secondary btn-sm" onClick={handleDownloadTemplate}>
-                  Download Template
-                </button>
-                <button className="btn btn-secondary btn-sm" onClick={() => fileInputRef.current?.click()}>
-                  Upload Excel
-                </button>
-                <input
-                  type="file"
-                  ref={fileInputRef}
-                  style={{ display: 'none' }}
-                  accept=".xlsx"
-                  onChange={handleUploadExcel}
-                />
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                <button className="btn btn-secondary btn-sm" onClick={handleDownloadTemplate}>⬇ Template</button>
+                <button className="btn btn-secondary btn-sm" onClick={() => fileInputRef.current?.click()}
+                >⬆ Excel</button>
+                <input type="file" ref={fileInputRef} style={{ display: 'none' }} accept=".xlsx" onChange={handleUploadExcel} />
                 <button className="btn btn-primary btn-sm" onClick={saveResults} disabled={saving}>
-                  {saving ? 'Saving...' : 'Save Results'}
+                  {saving ? 'Saving...' : '💾 Save'}
                 </button>
               </div>
             </div>

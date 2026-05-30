@@ -55,6 +55,7 @@ export default function ParentDashboard() {
   const [attendance, setAttendance] = useState<any[]>([]);
   const [results, setResults] = useState<any[]>([]);
   const [messages, setMessages] = useState<any[]>([]);
+  const [divisionName, setDivisionName] = useState<string>('');
 
   useEffect(() => {
     if (status === 'authenticated') fetchData();
@@ -74,10 +75,23 @@ export default function ParentDashboard() {
         setTimetable(sRes.data.timetable || []);
         setAttendance(sRes.data.attendance || []);
         setResults(sRes.data.results || []);
+        const firstEntry = sRes.data.timetable?.[0];
+        if (firstEntry?.division?.name) setDivisionName(firstEntry.division.name);
       }
     } catch {
       // Parent data API may not exist yet
     }
+  }
+
+  // Build parallel cell label for Division A (MAL1/SAN/ARA)
+  function buildParallelCell(entry: any) {
+    if (!entry) return null;
+    if (divisionName !== 'A') return null;
+    if (entry.subject?.isLanguageVariant) return null;
+    const variants: any[] = entry.subject?.variants ?? [];
+    if (variants.length === 0) return null;
+    const codes = [entry.subject.code, ...variants.map((v: any) => v.code)];
+    return codes;
   }
 
   const totalDays = attendance.length;
@@ -138,9 +152,18 @@ export default function ParentDashboard() {
                     <div key={`s${slot}`} className="timetable-cell slot-header">P{slot}</div>
                     {days.map(day => {
                       const entry = timetable.find((e: any) => e.dayOfWeek === day && e.slotNumber === slot);
+                      const parallel = buildParallelCell(entry);
                       return (
                         <div key={`${day}${slot}`} className="timetable-cell">
-                          {entry ? <span className="subject-name">{entry.subject?.code || entry.subject?.name}</span> : '—'}
+                          {entry ? (
+                            parallel ? (
+                              <span className="subject-name" style={{ fontSize: 10, fontWeight: 800, color: 'var(--primary-700)', letterSpacing: '.3px' }}>
+                                {parallel.join('/')}
+                              </span>
+                            ) : (
+                              <span className="subject-name">{entry.subject?.code || entry.subject?.name}</span>
+                            )
+                          ) : '—'}
                         </div>
                       );
                     })}
@@ -153,7 +176,7 @@ export default function ParentDashboard() {
           </div>
         </div>
 
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(350px, 1fr))', gap: 16 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 16 }}>
           {/* Results */}
           <div className="card">
             <div className="card-header"><h3>Exam Results</h3></div>

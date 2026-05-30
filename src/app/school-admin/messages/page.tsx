@@ -42,7 +42,9 @@ export default function MessagesPage() {
     <DashboardLayout>
       <div className="page-header">
         <div><h2>Messages</h2><p>Broadcast messages to teachers and parents</p></div>
-        <button className="btn btn-primary" onClick={() => setShowModal(true)}>+ New Message</button>
+        <div className="page-header-actions">
+          <button className="btn btn-primary" onClick={() => setShowModal(true)}>+ New Message</button>
+        </div>
       </div>
       <div className="page-body">
         <div className="card">

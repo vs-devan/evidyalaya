@@ -165,16 +165,16 @@ export default function StudentsPage() {
           <h2>Student Management</h2>
           <p>Manage students and parent accounts</p>
         </div>
-        <div style={{ display: 'flex', gap: 12 }}>
-          <select className="form-select" style={{ width: 200 }} value={selectedDiv} onChange={e => setSelectedDiv(e.target.value)}>
+        <div className="page-header-actions">
+          <select className="form-select" style={{ minWidth: 160 }} value={selectedDiv} onChange={e => setSelectedDiv(e.target.value)}>
             <option value="">Select Division...</option>
             {allDivisions.map((d: any) => <option key={d.id} value={d.id}>Class {d.className}{d.name}</option>)}
           </select>
           {selectedDiv && (
             <>
-              <button className="btn btn-secondary" onClick={handleDownloadTemplate}>Download Template</button>
+              <button className="btn btn-secondary" onClick={handleDownloadTemplate}>⬇ Template</button>
               <button className="btn btn-secondary" onClick={() => fileInputRef.current?.click()} disabled={uploading}>
-                {uploading ? 'Uploading...' : 'Upload Excel'}
+                {uploading ? 'Uploading...' : '⬆ Excel'}
               </button>
               <input type="file" ref={fileInputRef} style={{ display: 'none' }} accept=".xlsx" onChange={handleUploadExcel} />
               <button className="btn btn-primary" onClick={openAddModal}>+ Add Student</button>

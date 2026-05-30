@@ -25,7 +25,18 @@ export async function GET(req: NextRequest) {
   const entries = await prisma.timetableEntry.findMany({
     where,
     include: {
-      subject: { select: { id: true, name: true, code: true } },
+      subject: {
+        select: {
+          id: true,
+          name: true,
+          code: true,
+          isLanguageVariant: true,
+          replacesSubjectId: true,
+          variants: {
+            select: { id: true, name: true, code: true },
+          },
+        },
+      },
       teacher: { select: { id: true, teacherCode: true, user: { select: { name: true } } } },
       division: { include: { class: { select: { name: true } } } },
     },

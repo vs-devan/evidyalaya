@@ -52,7 +52,9 @@ export default function SuperAdminDashboard() {
           <h2>Super Admin Dashboard</h2>
           <p>Manage all schools and tenants</p>
         </div>
-        <button className="btn btn-primary" onClick={() => setShowModal(true)}>+ Add Tenant</button>
+        <div className="page-header-actions">
+          <button className="btn btn-primary" onClick={() => setShowModal(true)}>+ Add Tenant</button>
+        </div>
       </div>
 
       <div className="page-body">

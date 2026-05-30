@@ -274,10 +274,10 @@ export default function TeachersPage() {
           <h2>Teacher Management</h2>
           <p>Manage teacher profiles, subjects, and access</p>
         </div>
-        <div style={{ display: 'flex', gap: 12 }}>
-          <button className="btn btn-secondary" onClick={handleDownloadTemplate}>Download Template</button>
+        <div className="page-header-actions">
+          <button className="btn btn-secondary" onClick={handleDownloadTemplate}>⬇ Template</button>
           <button className="btn btn-secondary" onClick={() => fileInputRef.current?.click()} disabled={uploading}>
-            {uploading ? 'Uploading...' : 'Upload Excel'}
+            {uploading ? 'Uploading...' : '⬆ Excel'}
           </button>
           <input type="file" ref={fileInputRef} style={{ display: 'none' }} accept=".xlsx" onChange={handleUploadExcel} />
           <button className="btn btn-primary" onClick={openAddModal}>+ Add Teacher</button>

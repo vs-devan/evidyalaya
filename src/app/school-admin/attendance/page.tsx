@@ -102,9 +102,9 @@ export default function AttendancePage() {
           <h2>Attendance</h2>
           <p>Mark daily attendance</p>
         </div>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <input className="form-input" type="date" value={date} onChange={e => setDate(e.target.value)} style={{ width: 160 }} />
-          <select className="form-select" style={{ width: 200 }} value={selectedDiv} onChange={e => setSelectedDiv(e.target.value)}>
+        <div className="page-header-actions">
+          <input className="form-input" type="date" value={date} onChange={e => setDate(e.target.value)} style={{ minWidth: 140 }} />
+          <select className="form-select" style={{ minWidth: 160 }} value={selectedDiv} onChange={e => setSelectedDiv(e.target.value)}>
             <option value="">Select Division...</option>
             {allDivisions.map((d: any) => <option key={d.id} value={d.id}>Class {d.className}{d.name}</option>)}
           </select>
@@ -152,12 +152,12 @@ export default function AttendancePage() {
             <div className="card">
               <div className="card-header">
                 <h3>Students ({students.length})</h3>
-                <div style={{ display: 'flex', gap: 8 }}>
+                <div className="page-header-actions" style={{ marginTop: 4 }}>
                   <button className="btn btn-secondary btn-sm" onClick={handleDownloadTemplate}>
-                    Download Template
+                    ⬇ Template
                   </button>
                   <button className="btn btn-secondary btn-sm" onClick={() => fileInputRef.current?.click()}>
-                    Upload Excel
+                    ⬆ Excel
                   </button>
                   <input
                     type="file"
@@ -166,8 +166,8 @@ export default function AttendancePage() {
                     accept=".xlsx"
                     onChange={handleUploadExcel}
                   />
-                  <button className="btn btn-primary" onClick={saveAttendance} disabled={saving}>
-                    {saving ? 'Saving...' : 'Save Attendance'}
+                  <button className="btn btn-primary btn-sm" onClick={saveAttendance} disabled={saving}>
+                    {saving ? 'Saving...' : '💾 Save Attendance'}
                   </button>
                 </div>
               </div>

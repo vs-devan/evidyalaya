@@ -97,7 +97,7 @@ export default function TeacherDashboard() {
         <div className="card" style={{ marginBottom: 16 }}>
           <div className="card-header"><h3>Today&apos;s Timetable</h3></div>
           <div className="card-body">
-            <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
+            <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
               {days.map(d => (
                 <button key={d} className={`btn btn-sm ${selectedDay === d ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setSelectedDay(d)}>
                   {getDayName(d).slice(0, 3)}

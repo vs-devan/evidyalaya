@@ -8,6 +8,8 @@ export default function ParentTimetable() {
   const [timetable, setTimetable] = useState<any[]>([]);
   const [selectedDay, setSelectedDay] = useState(new Date().getDay() || 1);
   const [isMobile, setIsMobile] = useState(false);
+  // Division name of child's class (needed for parallel cell logic)
+  const [divisionName, setDivisionName] = useState<string>('');
 
   useEffect(() => {
     const checkMobile = () => setIsMobile(window.innerWidth <= 768);
@@ -19,11 +21,29 @@ export default function ParentTimetable() {
   useEffect(() => {
     fetch('/api/parent/data')
       .then(r => r.json())
-      .then(d => { if (d.success) setTimetable(d.data.timetable || []); });
+      .then(d => {
+        if (d.success) {
+          setTimetable(d.data.timetable || []);
+          // Detect division name from the first timetable entry
+          const firstEntry = d.data.timetable?.[0];
+          if (firstEntry?.division?.name) setDivisionName(firstEntry.division.name);
+        }
+      });
   }, []);
 
   const days = [1, 2, 3, 4, 5];
   const slots = [1, 2, 3, 4, 5, 6, 7];
+
+  // Build parallel cell label for Division A (MAL1/SAN/ARA)
+  function buildParallelCell(entry: any) {
+    if (!entry) return null;
+    if (divisionName !== 'A') return null;
+    if (entry.subject?.isLanguageVariant) return null;
+    const variants: any[] = entry.subject?.variants ?? [];
+    if (variants.length === 0) return null;
+    const codes = [entry.subject.code, ...variants.map((v: any) => v.code)];
+    return codes;
+  }
 
   return (
     <DashboardLayout>
@@ -69,18 +89,28 @@ export default function ParentTimetable() {
                       }
 
                       const entry = timetable.find((t: any) => t.dayOfWeek === selectedDay && t.slotNumber === slot);
+                      const parallel = buildParallelCell(entry);
 
                       return (
                         <div key={slot} className={`tt-mobile-slot-card ${entry ? 'filled' : 'empty'}`}>
                           <div className="tt-slot-time">Period {slot}</div>
                           <div className="tt-slot-info">
                             {entry ? (
-                              <>
-                                <div className="tt-slot-subject">{entry.subject?.name || entry.subject?.code}</div>
-                                <div className="tt-slot-teacher">
-                                  👩‍🏫 {entry.teacher?.user?.name || entry.teacher?.teacherCode}
-                                </div>
-                              </>
+                              parallel ? (
+                                <>
+                                  <div className="tt-slot-subject tt-parallel-subject">{parallel.join('/')}</div>
+                                  <div className="tt-slot-teacher" style={{ fontSize: 11, color: 'var(--primary-600)' }}>
+                                    Parallel classes
+                                  </div>
+                                </>
+                              ) : (
+                                <>
+                                  <div className="tt-slot-subject">{entry.subject?.name || entry.subject?.code}</div>
+                                  <div className="tt-slot-teacher">
+                                    👩‍🏫 {entry.teacher?.user?.name || entry.teacher?.teacherCode}
+                                  </div>
+                                </>
+                              )
                             ) : (
                               <div className="tt-slot-empty">Free Period</div>
                             )}
@@ -100,9 +130,18 @@ export default function ParentTimetable() {
                       <div key={`s${slot}`} className="timetable-cell slot-header">P{slot}</div>
                       {days.map(day => {
                         const e = timetable.find((t: any) => t.dayOfWeek === day && t.slotNumber === slot);
+                        const parallel = buildParallelCell(e);
                         return (
                           <div key={`${day}${slot}`} className="timetable-cell">
-                            {e ? <span className="subject-name">{e.subject?.name || e.subject?.code}</span> : '—'}
+                            {e ? (
+                              parallel ? (
+                                <span className="subject-name" style={{ fontSize: 10, fontWeight: 800, color: 'var(--primary-700)', letterSpacing: '.3px' }}>
+                                  {parallel.join('/')}
+                                </span>
+                              ) : (
+                                <span className="subject-name">{e.subject?.name || e.subject?.code}</span>
+                              )
+                            ) : '—'}
                           </div>
                         );
                       })}

@@ -89,7 +89,9 @@ export default function ClassesPage() {
     <DashboardLayout>
       <div className="page-header">
         <div><h2>Classes & Divisions</h2><p>Manage class structure for your school</p></div>
-        <button className="btn btn-primary" onClick={openAddModal}>+ Add Class</button>
+        <div className="page-header-actions">
+          <button className="btn btn-primary" onClick={openAddModal}>+ Add Class</button>
+        </div>
       </div>
       <div className="page-body">
         {message && (

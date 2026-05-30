@@ -37,10 +37,12 @@ export default function TenantsPage() {
     <DashboardLayout>
       <div className="page-header">
         <div><h2>Tenant Management</h2><p>Manage school tenants</p></div>
-        <button className="btn btn-primary" onClick={() => setShowModal(true)}>+ Add Tenant</button>
+        <div className="page-header-actions">
+          <button className="btn btn-primary" onClick={() => setShowModal(true)}>+ Add Tenant</button>
+        </div>
       </div>
       <div className="page-body">
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(340px, 1fr))', gap: 16 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 16 }}>
           {tenants.map(t => (
             <div key={t.id} className="card">
               <div className="card-header"><h3>{t.name}</h3><span className="badge badge-blue">{t.section}</span></div>
