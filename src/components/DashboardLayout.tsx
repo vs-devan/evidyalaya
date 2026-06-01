@@ -84,10 +84,56 @@ function NavIcon({ name }: { name: string }) {
 }
 
 export default function DashboardLayout({ children }: { children: ReactNode }) {
-  const { data: session } = useSession();
+  const { data: session, update } = useSession();
   const pathname = usePathname();
   const router = useRouter();
   const [sidebarOpen, setSidebarOpen] = useState(false);
+
+  // Password change states
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [pwdLoading, setPwdLoading] = useState(false);
+  const [pwdError, setPwdError] = useState('');
+  const [pwdSuccess, setPwdSuccess] = useState(false);
+
+  async function handleForcePasswordChange(e: React.FormEvent) {
+    e.preventDefault();
+    setPwdError('');
+    setPwdLoading(true);
+
+    if (newPassword.length < 6) {
+      setPwdError('Password must be at least 6 characters long.');
+      setPwdLoading(false);
+      return;
+    }
+
+    if (newPassword !== confirmPassword) {
+      setPwdError('Passwords do not match.');
+      setPwdLoading(false);
+      return;
+    }
+
+    try {
+      const res = await fetch('/api/auth/password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ newPassword }),
+      });
+      const data = await res.json();
+
+      if (data.success) {
+        setPwdSuccess(true);
+        await update({ mustChangePassword: false });
+      } else {
+        setPwdError(data.error || 'Failed to update password. Please try again.');
+      }
+    } catch {
+      setPwdError('An unexpected error occurred. Please try again.');
+    } finally {
+      setPwdLoading(false);
+    }
+  }
 
   // Close sidebar on route change
   useEffect(() => { setSidebarOpen(false); }, [pathname]);
@@ -206,11 +252,191 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
         {children}
       </main>
 
+      {/* Forced Password Change Overlay */}
+      {session?.user && (session.user as any).mustChangePassword && (
+        <div className="password-force-overlay">
+          <div className="password-force-card">
+            <div style={{ textAlign: 'center', marginBottom: 24 }}>
+              <div style={{
+                background: 'rgba(99,102,241,0.15)',
+                color: '#818cf8',
+                width: 56,
+                height: 56,
+                borderRadius: '50%',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                margin: '0 auto 16px',
+                fontSize: 24
+              }}>
+                🔒
+              </div>
+              <h2 style={{ fontSize: 20, fontWeight: 700, margin: '0 0 8px', color: '#fff' }}>Secure Your Account</h2>
+              <p style={{ fontSize: 13, color: 'rgba(255,255,255,0.7)', margin: 0 }}>
+                This is your first login. Please choose a new password to secure your account.
+              </p>
+            </div>
+
+            {pwdError && (
+              <div style={{
+                background: 'rgba(239,68,68,0.1)',
+                border: '1px solid rgba(239,68,68,0.2)',
+                color: '#f87171',
+                padding: '10px 14px',
+                borderRadius: 8,
+                fontSize: 12,
+                marginBottom: 16,
+                textAlign: 'center'
+              }}>
+                {pwdError}
+              </div>
+            )}
+
+            {pwdSuccess ? (
+              <div style={{ textAlign: 'center', padding: '16px 0' }}>
+                <div style={{ color: '#34d399', fontSize: 48, marginBottom: 12 }}>✓</div>
+                <h3 style={{ fontSize: 16, fontWeight: 600, color: '#fff', marginBottom: 8 }}>Password Changed!</h3>
+                <p style={{ fontSize: 13, color: 'rgba(255,255,255,0.6)' }}>Redirecting you to the dashboard...</p>
+              </div>
+            ) : (
+              <form onSubmit={handleForcePasswordChange}>
+                <div style={{ marginBottom: 16 }}>
+                  <label style={{ display: 'block', fontSize: 12, fontWeight: 500, color: 'rgba(255,255,255,0.8)', marginBottom: 6 }}>
+                    New Password
+                  </label>
+                  <div style={{ position: 'relative' }}>
+                    <input
+                      type={showPassword ? 'text' : 'password'}
+                      required
+                      className="form-input"
+                      style={{
+                        width: '100%',
+                        background: 'rgba(0,0,0,0.2)',
+                        border: '1px solid rgba(255,255,255,0.15)',
+                        color: '#fff',
+                        paddingRight: 80,
+                        height: 42
+                      }}
+                      value={newPassword}
+                      onChange={e => setNewPassword(e.target.value)}
+                      placeholder="At least 6 characters"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowPassword(!showPassword)}
+                      style={{
+                        position: 'absolute',
+                        right: 8,
+                        top: '50%',
+                        transform: 'translateY(-50%)',
+                        background: 'none',
+                        border: 'none',
+                        color: 'rgba(255,255,255,0.5)',
+                        fontSize: 11,
+                        cursor: 'pointer',
+                        fontWeight: 600,
+                        padding: '4px 8px',
+                        textTransform: 'uppercase'
+                      }}
+                    >
+                      {showPassword ? 'Hide' : 'Show'}
+                    </button>
+                  </div>
+                </div>
+
+                <div style={{ marginBottom: 24 }}>
+                  <label style={{ display: 'block', fontSize: 12, fontWeight: 500, color: 'rgba(255,255,255,0.8)', marginBottom: 6 }}>
+                    Confirm New Password
+                  </label>
+                  <input
+                    type={showPassword ? 'text' : 'password'}
+                    required
+                    className="form-input"
+                    style={{
+                      width: '100%',
+                      background: 'rgba(0,0,0,0.2)',
+                      border: '1px solid rgba(255,255,255,0.15)',
+                      color: '#fff',
+                      height: 42
+                    }}
+                    value={confirmPassword}
+                    onChange={e => setConfirmPassword(e.target.value)}
+                    placeholder="Repeat new password"
+                  />
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={pwdLoading}
+                  className="btn btn-primary"
+                  style={{
+                    width: '100%',
+                    height: 44,
+                    background: 'linear-gradient(to right, #6366f1, #4f46e5)',
+                    border: 'none',
+                    fontWeight: 600,
+                    borderRadius: 8,
+                    cursor: 'pointer',
+                    color: '#fff'
+                  }}
+                >
+                  {pwdLoading ? 'Updating...' : 'Update Password'}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => signOut({ callbackUrl: '/login' })}
+                  className="btn btn-ghost"
+                  style={{
+                    width: '100%',
+                    marginTop: 12,
+                    color: 'rgba(255,255,255,0.4)',
+                    fontSize: 12,
+                    background: 'none',
+                    border: 'none',
+                    cursor: 'pointer'
+                  }}
+                >
+                  Sign Out
+                </button>
+              </form>
+            )}
+          </div>
+        </div>
+      )}
+
       <style>{`
         /* Hide close button on desktop */
         @media (min-width: 1025px) {
           .sidebar-close-btn { display: none !important; }
           .sidebar { transform: translateX(0) !important; box-shadow: none !important; }
+        }
+
+        .password-force-overlay {
+          position: fixed;
+          inset: 0;
+          z-index: 99999;
+          background: radial-gradient(circle at 50% 50%, rgba(30, 27, 75, 0.96), rgba(15, 23, 42, 0.98));
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          padding: 24px;
+          backdrop-filter: blur(16px);
+        }
+        .password-force-card {
+          width: 100%;
+          max-width: 440px;
+          background: rgba(255, 255, 255, 0.04);
+          border: 1px solid rgba(255, 255, 255, 0.1);
+          border-radius: 16px;
+          box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.6);
+          padding: 32px;
+          color: #fff;
+          animation: floatIn 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+        @keyframes floatIn {
+          from { opacity: 0; transform: translateY(16px); }
+          to { opacity: 1; transform: translateY(0); }
         }
       `}</style>
     </div>

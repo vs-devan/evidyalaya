@@ -398,8 +398,16 @@ export default function TeachersPage() {
                   </div>
                   {!editingTeacher && (
                     <div className="form-row">
-                      <div className="form-group"><label className="form-label">Username *</label><input className="form-input" required value={form.username} onChange={e => setForm({ ...form, username: e.target.value })} /></div>
-                      <div className="form-group"><label className="form-label">Password</label><input className="form-input" type="password" value={form.password} onChange={e => setForm({ ...form, password: e.target.value })} placeholder="Leave blank to auto-generate" /></div>
+                      <div className="form-group">
+                        <label className="form-label">Username</label>
+                        <input className="form-input" value={form.username} onChange={e => setForm({ ...form, username: e.target.value })} placeholder="Leave blank to auto-generate" />
+                        <span className="form-hint">Format: &lt;teacher_code&gt;_&lt;school_code&gt;</span>
+                      </div>
+                      <div className="form-group">
+                        <label className="form-label">Password</label>
+                        <input className="form-input" type="password" value={form.password} onChange={e => setForm({ ...form, password: e.target.value })} placeholder="Leave blank to auto-generate" />
+                        <span className="form-hint">Format: &lt;school_code&gt;&lt;teacher_code&gt;</span>
+                      </div>
                     </div>
                   )}
                   <div className="form-row">

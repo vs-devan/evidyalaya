@@ -46,20 +46,22 @@ export async function POST(req: NextRequest) {
   });
 
   // Create school admin user
-  if (adminUsername && adminPassword) {
-    const hashed = await hashPassword(adminPassword);
-    await prisma.user.create({
-      data: {
-        tenantId: tenant.id,
-        username: adminUsername,
-        password: hashed,
-        name: adminName || 'School Admin',
-        role: 'SCHOOL_ADMIN',
-        mustChangePassword: true,
-        createdById: session.user.id,
-      },
-    });
-  }
+  const schoolCode = code.trim();
+  const finalAdminUsername = (adminUsername && adminUsername.trim()) || `admin_${schoolCode}`;
+  const finalAdminPassword = (adminPassword && adminPassword.trim()) || `${schoolCode}admin`;
+
+  const hashed = await hashPassword(finalAdminPassword);
+  await prisma.user.create({
+    data: {
+      tenantId: tenant.id,
+      username: finalAdminUsername,
+      password: hashed,
+      name: adminName || `${schoolName} Admin`,
+      role: 'SCHOOL_ADMIN',
+      mustChangePassword: true,
+      createdById: session.user.id,
+    },
+  });
 
   return NextResponse.json({ success: true, data: tenant }, { status: 201 });
 }

@@ -34,6 +34,8 @@ export interface DivisionInput {
   classId: string;    // parent class ID
   classTeacherId: string | null;
   subjects: DivisionSubjectInput[];
+  coScheduledDivisions?: { divisionId: string; teacherId: string }[];
+  isFollowerDivision?: boolean;
 }
 
 export interface DivisionSubjectInput {
@@ -56,6 +58,8 @@ export interface SubjectInput {
   eveningPriority: boolean;
   consecutiveSlots: number;
   periodsPerWeek: number;
+  isLanguageVariant?: boolean;
+  replacesSubjectId?: string | null;
 }
 
 export interface TeacherInput {

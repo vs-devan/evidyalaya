@@ -74,6 +74,9 @@ interface Variable {
   fixedDay: number | null;    // 1–6 or null
   fixedSlot: number | null;   // resolved slot number or null
   classTeacherId: string | null;
+  isDivA: boolean;
+  variantTeacherIds: string[];
+  coScheduledDivisions?: { divisionId: string; teacherId: string }[];
 }
 
 interface Assignment {
@@ -166,6 +169,19 @@ class State {
       if (slot > this.cfg.slotsPerDay) return false;
       if (!this.divSlotFree(v.divisionId, d, slot)) return false;
       if (!this.teacherFree(v.teacherId, d, slot))  return false;
+
+      if (v.coScheduledDivisions) {
+        for (const co of v.coScheduledDivisions) {
+          if (!this.divSlotFree(co.divisionId, d, slot)) return false;
+          if (!this.teacherFree(co.teacherId, d, slot))  return false;
+        }
+      }
+
+      if (v.isDivA && v.variantTeacherIds.length > 0) {
+        for (const vtId of v.variantTeacherIds) {
+          if (!this.teacherFree(vtId, d, slot)) return false;
+        }
+      }
     }
     // Consecutive block must not span lunch
     if (v.blockSize > 1) {
@@ -183,10 +199,32 @@ class State {
     for (let i = 0; i < v.blockSize; i++) {
       this.divGrid.set(`${v.divisionId}:${d}:${s + i}`, vi);
       this.teacherGrid.set(`${v.teacherId}:${d}:${s + i}`, vi);
+
+      if (v.coScheduledDivisions) {
+        for (const co of v.coScheduledDivisions) {
+          this.divGrid.set(`${co.divisionId}:${d}:${s + i}`, vi);
+          this.teacherGrid.set(`${co.teacherId}:${d}:${s + i}`, vi);
+        }
+      }
+
+      if (v.isDivA && v.variantTeacherIds.length > 0) {
+        for (const vtId of v.variantTeacherIds) {
+          this.teacherGrid.set(`${vtId}:${d}:${s + i}`, vi);
+        }
+      }
     }
     const sdk = `${v.divisionId}:${v.subjectId}:${d}`;
     this.sdCount.set(sdk, (this.sdCount.get(sdk) ?? 0) + 1);
     this.tLoad.set(v.teacherId, (this.tLoad.get(v.teacherId) ?? 0) + v.blockSize);
+
+    if (v.coScheduledDivisions) {
+      for (const co of v.coScheduledDivisions) {
+        const coSdk = `${co.divisionId}:${v.subjectId}:${d}`;
+        this.sdCount.set(coSdk, (this.sdCount.get(coSdk) ?? 0) + 1);
+        this.tLoad.set(co.teacherId, (this.tLoad.get(co.teacherId) ?? 0) + v.blockSize);
+      }
+    }
+
     this.assignedCount++;
   }
 
@@ -198,11 +236,34 @@ class State {
     for (let i = 0; i < v.blockSize; i++) {
       this.divGrid.delete(`${v.divisionId}:${a.day}:${a.slot + i}`);
       this.teacherGrid.delete(`${v.teacherId}:${a.day}:${a.slot + i}`);
+
+      if (v.coScheduledDivisions) {
+        for (const co of v.coScheduledDivisions) {
+          this.divGrid.delete(`${co.divisionId}:${a.day}:${a.slot + i}`);
+          this.teacherGrid.delete(`${co.teacherId}:${a.day}:${a.slot + i}`);
+        }
+      }
+
+      if (v.isDivA && v.variantTeacherIds.length > 0) {
+        for (const vtId of v.variantTeacherIds) {
+          this.teacherGrid.delete(`${vtId}:${a.day}:${a.slot + i}`);
+        }
+      }
     }
     const sdk = `${v.divisionId}:${v.subjectId}:${a.day}`;
     const c = this.sdCount.get(sdk) ?? 0;
     if (c <= 1) this.sdCount.delete(sdk); else this.sdCount.set(sdk, c - 1);
     this.tLoad.set(v.teacherId, (this.tLoad.get(v.teacherId) ?? 0) - v.blockSize);
+
+    if (v.coScheduledDivisions) {
+      for (const co of v.coScheduledDivisions) {
+        const coSdk = `${co.divisionId}:${v.subjectId}:${a.day}`;
+        const coC = this.sdCount.get(coSdk) ?? 0;
+        if (coC <= 1) this.sdCount.delete(coSdk); else this.sdCount.set(coSdk, coC - 1);
+        this.tLoad.set(co.teacherId, (this.tLoad.get(co.teacherId) ?? 0) - v.blockSize);
+      }
+    }
+
     this.assignedCount--;
     return a;
   }
@@ -224,8 +285,55 @@ function buildVariables(input: TimetableInput): Variable[] {
   const vars: Variable[] = [];
   let idx = 0;
 
+  // 1. Map each base subject to its variant subject IDs
+  const variantSubjectsByBase = new Map<string, string[]>();
+  const baseSubjectIds = new Set<string>();
+  for (const s of input.subjects as any) {
+    if (s.isLanguageVariant && s.replacesSubjectId) {
+      const baseId = s.replacesSubjectId;
+      baseSubjectIds.add(baseId);
+      if (!variantSubjectsByBase.has(baseId)) {
+        variantSubjectsByBase.set(baseId, []);
+      }
+      variantSubjectsByBase.get(baseId)!.push(s.id);
+    }
+  }
+
+  // 2. Map each variant subject to teacher IDs who teach it
+  const teachersBySubject = new Map<string, string[]>();
+  for (const t of input.teachers as any) {
+    const mappings = t.subjectMappings || [];
+    for (const subId of mappings) {
+      if (!teachersBySubject.has(subId)) {
+        teachersBySubject.set(subId, []);
+      }
+      teachersBySubject.get(subId)!.push(t.id);
+    }
+  }
+
+  // 3. Map each base subject to its variant teacher IDs
+  const variantTeachersByBase = new Map<string, string[]>();
+  for (const [baseId, variantSubIds] of variantSubjectsByBase.entries()) {
+    const teacherIds = new Set<string>();
+    for (const vSubId of variantSubIds) {
+      const tIds = teachersBySubject.get(vSubId) || [];
+      for (const tId of tIds) {
+        teacherIds.add(tId);
+      }
+    }
+    if (teacherIds.size > 0) {
+      variantTeachersByBase.set(baseId, Array.from(teacherIds));
+    }
+  }
+
   for (const div of input.divisions) {
+    const isDivA = div.name.endsWith('A');
     for (const ds of div.subjects) {
+      // Skip scheduling base subjects for follower divisions
+      if (div.isFollowerDivision && baseSubjectIds.has(ds.subjectId)) {
+        continue;
+      }
+
       const teacherId = ds.useClassTeacher
         ? (div.classTeacherId ?? ds.teacherId)
         : ds.teacherId;
@@ -236,6 +344,8 @@ function buildVariables(input: TimetableInput): Variable[] {
       const remainder = ds.periodsPerWeek - numBlocks * blockSize;
 
       const fixedSlot = resolveSlotNumber(ds.fixedSlot, input.slotsPerDay);
+      const variantTeacherIds = variantTeachersByBase.get(ds.subjectId) || [];
+      const coScheduledDivisions = baseSubjectIds.has(ds.subjectId) ? div.coScheduledDivisions : undefined;
 
       // Create block-sized variables
       for (let p = 0; p < numBlocks; p++) {
@@ -250,6 +360,9 @@ function buildVariables(input: TimetableInput): Variable[] {
           fixedDay: ds.fixedDay ?? null,
           fixedSlot,
           classTeacherId: div.classTeacherId,
+          isDivA,
+          variantTeacherIds,
+          coScheduledDivisions,
         });
         idx++;
       }
@@ -267,6 +380,9 @@ function buildVariables(input: TimetableInput): Variable[] {
           fixedDay: ds.fixedDay ?? null,
           fixedSlot,
           classTeacherId: div.classTeacherId,
+          isDivA,
+          variantTeacherIds,
+          coScheduledDivisions,
         });
         idx++;
       }
@@ -1181,6 +1297,18 @@ export async function solveTimetable(
         subjectId: v.subjectId,
         teacherId: v.teacherId,
       });
+
+      if (v.coScheduledDivisions) {
+        for (const co of v.coScheduledDivisions) {
+          timetable.push({
+            divisionId: co.divisionId,
+            dayOfWeek: a.day,
+            slotNumber: a.slot + b,
+            subjectId: v.subjectId,
+            teacherId: co.teacherId,
+          });
+        }
+      }
     }
   }
 

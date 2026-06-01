@@ -133,7 +133,7 @@ export async function POST(req: NextRequest) {
         // ─── Phase 1: Loading Data ───────────────────────────────────────────
         emit({ phase: 'loading_data', pct: 5, label: 'Loading school configuration…' });
 
-        const [tenant, subjects, classes, teachers, classSubjectOverrides, divisionExclusions] =
+        const [tenant, subjects, classes, teachers, classSubjectOverrides, divisionExclusions, divisionSubjects] =
           await Promise.all([
             prisma.tenant.findUnique({
               where: { id: tenantId },
@@ -157,6 +157,9 @@ export async function POST(req: NextRequest) {
             prisma.divisionSubject.findMany({
               where: { excluded: true, division: { class: { tenantId } } },
               select: { divisionId: true, subjectId: true },
+            }),
+            prisma.divisionSubject.findMany({
+              where: { division: { class: { tenantId } } },
             }),
           ]);
 
@@ -394,12 +397,109 @@ export async function POST(req: NextRequest) {
           }
         }
 
+        // --- Co-scheduling Analysis ---
+        const baseSubjectIds = new Set(
+          subjects.filter(s => s.isLanguageVariant && s.replacesSubjectId).map(s => s.replacesSubjectId!)
+        );
+
+        const variantTeachersMap = new Map<string, string[]>();
+        for (const s of subjects) {
+          if (s.isLanguageVariant) {
+            const vTeachers = teachers.filter(t => t.subjectMappings.some(sm => sm.subjectId === s.id));
+            variantTeachersMap.set(s.id, vTeachers.map(t => t.id));
+          }
+        }
+
+        const divisionVariantTeachers = new Map<string, Set<string>>();
+        for (const ds of divisionSubjects) {
+          if (ds.useLanguageVariant && ds.languageVariantSubjectId) {
+            const vTeachers = variantTeachersMap.get(ds.languageVariantSubjectId) || [];
+            if (!divisionVariantTeachers.has(ds.divisionId)) {
+              divisionVariantTeachers.set(ds.divisionId, new Set());
+            }
+            const set = divisionVariantTeachers.get(ds.divisionId)!;
+            for (const tId of vTeachers) {
+              set.add(tId);
+            }
+          }
+        }
+
+        for (const cls of classes) {
+          const classDivs = cls.divisions;
+          if (classDivs.length <= 1) continue;
+
+          const adj = new Map<string, string[]>();
+          for (const d of classDivs) adj.set(d.id, []);
+
+          for (let i = 0; i < classDivs.length; i++) {
+            for (let j = i + 1; j < classDivs.length; j++) {
+              const d1 = classDivs[i];
+              const d2 = classDivs[j];
+              const t1 = divisionVariantTeachers.get(d1.id) || new Set();
+              const t2 = divisionVariantTeachers.get(d2.id) || new Set();
+              let share = false;
+              for (const tId of t1) {
+                if (t2.has(tId)) { share = true; break; }
+              }
+              if (share) {
+                adj.get(d1.id)!.push(d2.id);
+                adj.get(d2.id)!.push(d1.id);
+              }
+            }
+          }
+
+          const visited = new Set<string>();
+          for (const d of classDivs) {
+            if (!visited.has(d.id)) {
+              const comp: string[] = [];
+              const queue = [d.id];
+              visited.add(d.id);
+              while (queue.length > 0) {
+                const u = queue.shift()!;
+                comp.push(u);
+                for (const v of adj.get(u) || []) {
+                  if (!visited.has(v)) {
+                    visited.add(v);
+                    queue.push(v);
+                  }
+                }
+              }
+              const hasVariantTeachers = comp.some(divId => (divisionVariantTeachers.get(divId)?.size ?? 0) > 0);
+              if (comp.length > 1 && hasVariantTeachers) {
+                const leadId = comp[0];
+                const leadInput = divisionInputs.find(di => di.id === leadId);
+                if (leadInput) {
+                  leadInput.coScheduledDivisions = [];
+                  for (let idx = 1; idx < comp.length; idx++) {
+                    const followerId = comp[idx];
+                    const followerInput = divisionInputs.find(di => di.id === followerId);
+                    if (followerInput) {
+                      followerInput.isFollowerDivision = true;
+                      for (const baseId of baseSubjectIds) {
+                        const fSub = followerInput.subjects.find(s => s.subjectId === baseId);
+                        if (fSub) {
+                          leadInput.coScheduledDivisions.push({
+                            divisionId: followerId,
+                            teacherId: fSub.teacherId,
+                          });
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+
         const engineInput: TimetableInput = {
           divisions: divisionInputs,
           subjects: subjects.map(s => ({
             id: s.id, name: s.name, isCore: s.isCore,
             eveningPriority: s.eveningPriority, consecutiveSlots: s.consecutiveSlots,
             periodsPerWeek: s.periodsPerWeek,
+            isLanguageVariant: s.isLanguageVariant,
+            replacesSubjectId: s.replacesSubjectId,
           })),
           teachers: teachers.map(t => ({
             id: t.id, name: t.user.name, teacherCode: t.teacherCode,
@@ -467,13 +567,57 @@ export async function POST(req: NextRequest) {
               const validSubjects = new Set(engineInput.subjects.map(s => s.id));
               const validTeachers = new Set(engineInput.teachers.map(t => t.id));
 
+              const divisionNames = new Map(engineInput.divisions.map(d => [d.id, d.name]));
+
+              // Map base subject ID to its variant teacher IDs
+              const variantTeachersByBase = new Map<string, string[]>();
+              for (const s of subjects) {
+                if (s.isLanguageVariant && s.replacesSubjectId) {
+                  const baseId = s.replacesSubjectId;
+                  if (!variantTeachersByBase.has(baseId)) {
+                    variantTeachersByBase.set(baseId, []);
+                  }
+                  const teachersForVariant = teachers.filter(t => t.subjectMappings.some(sm => sm.subjectId === s.id));
+                  const currentList = variantTeachersByBase.get(baseId)!;
+                  for (const t of teachersForVariant) {
+                    if (!currentList.includes(t.id)) {
+                      currentList.push(t.id);
+                    }
+                  }
+                }
+              }
+
               // Build occupancy set from existing timetable for dedup
               const occupied = new Set(
                 finalTimetable.map(e => `${e.divisionId}:${e.dayOfWeek}:${e.slotNumber}`)
               );
-              const teacherOccupied = new Set(
-                finalTimetable.map(e => `${e.teacherId}:${e.dayOfWeek}:${e.slotNumber}`)
-              );
+              const teacherOccupied = new Set<string>();
+              for (const e of finalTimetable) {
+                teacherOccupied.add(`${e.teacherId}:${e.dayOfWeek}:${e.slotNumber}`);
+                const divName = divisionNames.get(e.divisionId) ?? '';
+                if (divName.endsWith('A')) {
+                  const varTeachers = variantTeachersByBase.get(e.subjectId) || [];
+                  for (const vtId of varTeachers) {
+                    teacherOccupied.add(`${vtId}:${e.dayOfWeek}:${e.slotNumber}`);
+                  }
+                }
+              }
+
+              // Map: divisionId -> list of all co-scheduled division details in its group (including itself)
+              const coScheduledGroupMap = new Map<string, { divisionId: string; teacherId: string }[]>();
+              for (const di of engineInput.divisions) {
+                if (di.coScheduledDivisions && di.coScheduledDivisions.length > 0) {
+                  const leadBaseSub = di.subjects.find(s => baseSubjectIds.has(s.subjectId));
+                  const leadTeacherId = leadBaseSub?.teacherId ?? '';
+                  const fullGroup = [
+                    { divisionId: di.id, teacherId: leadTeacherId },
+                    ...di.coScheduledDivisions
+                  ];
+                  for (const member of fullGroup) {
+                    coScheduledGroupMap.set(member.divisionId, fullGroup);
+                  }
+                }
+              }
 
               let addedCount = 0;
               for (const slot of aiSlots) {
@@ -486,21 +630,98 @@ export async function POST(req: NextRequest) {
                 if (exclusionSet.has(`${slot.divisionId}:${slot.subjectId}`)) continue;
                 if (!isTeacherAllowed(slot.teacherId, slot.subjectId, slot.divisionId)) continue;
 
-                const divKey = `${slot.divisionId}:${slot.dayOfWeek}:${slot.slotNumber}`;
-                const tKey = `${slot.teacherId}:${slot.dayOfWeek}:${slot.slotNumber}`;
+                // Check co-scheduling if it's a base subject in a co-scheduled division
+                const isBase = baseSubjectIds.has(slot.subjectId);
+                const coGroup = isBase ? coScheduledGroupMap.get(slot.divisionId) : undefined;
 
-                if (occupied.has(divKey) || teacherOccupied.has(tKey)) continue;
+                if (coGroup) {
+                  // Verify all co-scheduled divisions and teachers are free
+                  let canPlaceCo = true;
+                  for (const member of coGroup) {
+                    const divKey = `${member.divisionId}:${slot.dayOfWeek}:${slot.slotNumber}`;
+                    const tKey = `${member.teacherId}:${slot.dayOfWeek}:${slot.slotNumber}`;
+                    if (occupied.has(divKey) || teacherOccupied.has(tKey)) {
+                      canPlaceCo = false;
+                      break;
+                    }
+                  }
+                  if (!canPlaceCo) continue;
 
-                finalTimetable.push({
-                  divisionId: slot.divisionId,
-                  dayOfWeek: slot.dayOfWeek,
-                  slotNumber: slot.slotNumber,
-                  subjectId: slot.subjectId,
-                  teacherId: slot.teacherId,
-                });
-                occupied.add(divKey);
-                teacherOccupied.add(tKey);
-                addedCount++;
+                  // Verify variant teachers are free (since they are shared in Division A)
+                  let variantTeacherBusy = false;
+                  for (const member of coGroup) {
+                    const divName = divisionNames.get(member.divisionId) ?? '';
+                    if (divName.endsWith('A')) {
+                      const varTeachers = variantTeachersByBase.get(slot.subjectId) || [];
+                      for (const vtId of varTeachers) {
+                        if (teacherOccupied.has(`${vtId}:${slot.dayOfWeek}:${slot.slotNumber}`)) {
+                          variantTeacherBusy = true;
+                          break;
+                        }
+                      }
+                    }
+                    if (variantTeacherBusy) break;
+                  }
+                  if (variantTeacherBusy) continue;
+
+                  // Place all co-scheduled entries
+                  for (const member of coGroup) {
+                    finalTimetable.push({
+                      divisionId: member.divisionId,
+                      dayOfWeek: slot.dayOfWeek,
+                      slotNumber: slot.slotNumber,
+                      subjectId: slot.subjectId,
+                      teacherId: member.teacherId,
+                    });
+                    occupied.add(`${member.divisionId}:${slot.dayOfWeek}:${slot.slotNumber}`);
+                    teacherOccupied.add(`${member.teacherId}:${slot.dayOfWeek}:${slot.slotNumber}`);
+                    
+                    const divName = divisionNames.get(member.divisionId) ?? '';
+                    if (divName.endsWith('A')) {
+                      const varTeachers = variantTeachersByBase.get(slot.subjectId) || [];
+                      for (const vtId of varTeachers) {
+                        teacherOccupied.add(`${vtId}:${slot.dayOfWeek}:${slot.slotNumber}`);
+                      }
+                    }
+                  }
+                  addedCount += coGroup.length;
+                } else {
+                  // Standard single entry scheduling
+                  const divKey = `${slot.divisionId}:${slot.dayOfWeek}:${slot.slotNumber}`;
+                  const tKey = `${slot.teacherId}:${slot.dayOfWeek}:${slot.slotNumber}`;
+
+                  if (occupied.has(divKey) || teacherOccupied.has(tKey)) continue;
+
+                  const divName = divisionNames.get(slot.divisionId) ?? '';
+                  let variantTeacherBusy = false;
+                  if (divName.endsWith('A')) {
+                    const varTeachers = variantTeachersByBase.get(slot.subjectId) || [];
+                    for (const vtId of varTeachers) {
+                      if (teacherOccupied.has(`${vtId}:${slot.dayOfWeek}:${slot.slotNumber}`)) {
+                        variantTeacherBusy = true;
+                        break;
+                      }
+                    }
+                  }
+                  if (variantTeacherBusy) continue;
+
+                  finalTimetable.push({
+                    divisionId: slot.divisionId,
+                    dayOfWeek: slot.dayOfWeek,
+                    slotNumber: slot.slotNumber,
+                    subjectId: slot.subjectId,
+                    teacherId: slot.teacherId,
+                  });
+                  occupied.add(divKey);
+                  teacherOccupied.add(tKey);
+                  if (divName.endsWith('A')) {
+                    const varTeachers = variantTeachersByBase.get(slot.subjectId) || [];
+                    for (const vtId of varTeachers) {
+                      teacherOccupied.add(`${vtId}:${slot.dayOfWeek}:${slot.slotNumber}`);
+                    }
+                  }
+                  addedCount++;
+                }
               }
 
               emit({

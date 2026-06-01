@@ -72,3 +72,32 @@ export async function POST(req: NextRequest) {
 
   return NextResponse.json({ success: true, data: created }, { status: 201 });
 }
+
+// DELETE substitute assignment
+export async function DELETE(req: NextRequest) {
+  const session = await getServerSession(authOptions);
+  if (!session || session.user.role !== 'SCHOOL_ADMIN' || !session.user.tenantId) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 403 });
+  }
+
+  const { searchParams } = new URL(req.url);
+  const id = searchParams.get('id');
+
+  if (!id) {
+    return NextResponse.json({ error: 'ID is required' }, { status: 400 });
+  }
+
+  const existing = await prisma.substituteAssignment.findUnique({
+    where: { id },
+  });
+
+  if (!existing || existing.tenantId !== session.user.tenantId) {
+    return NextResponse.json({ error: 'Not found or unauthorized' }, { status: 404 });
+  }
+
+  await prisma.substituteAssignment.delete({
+    where: { id },
+  });
+
+  return NextResponse.json({ success: true, message: 'Assignment deleted successfully' });
+}

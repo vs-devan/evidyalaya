@@ -51,9 +51,51 @@ export default function SubstitutePage() {
 
   const allAbsentTeacherIds = new Set(absentEntries.map(e => e.teacherId));
 
+  function isTeacherBusyOnTimetable(tId: string, day: number, slot: number): boolean {
+    const teacherObj = teachers.find(t => t.id === tId);
+    const teacherSubjectIds = (teacherObj?.subjectMappings || []).map((sm: any) => sm.subjectId);
+
+    return timetable.some((e: any) => {
+      if (e.dayOfWeek !== day || e.slotNumber !== slot) return false;
+      if (e.teacherId === tId) return true;
+      if (e.division?.name === 'A' && e.subject?.variants?.length > 0) {
+        return e.subject.variants.some((v: any) => teacherSubjectIds.includes(v.id));
+      }
+      return false;
+    });
+  }
+
   function computeAffectedSlots(teacherId: string): any[] {
     const dayOfWeek = new Date(date).getDay() || 7;
-    return timetable.filter((e: any) => e.teacherId === teacherId && e.dayOfWeek === dayOfWeek);
+    const absentTeacherObj = teachers.find(t => t.id === teacherId);
+    if (!absentTeacherObj) return [];
+
+    const teacherSubjectIds = (absentTeacherObj.subjectMappings || []).map((sm: any) => sm.subjectId);
+    const affected: any[] = [];
+
+    for (const e of timetable) {
+      if (e.dayOfWeek !== dayOfWeek) continue;
+
+      if (e.teacherId === teacherId) {
+        affected.push(e);
+      } else if (e.division?.name === 'A' && e.subject?.variants?.length > 0) {
+        const matchingVariant = e.subject.variants.find((v: any) => teacherSubjectIds.includes(v.id));
+        if (matchingVariant) {
+          affected.push({
+            ...e,
+            subject: {
+              id: matchingVariant.id,
+              name: matchingVariant.name,
+              code: matchingVariant.code,
+            },
+            teacherId: teacherId,
+          });
+        }
+      }
+    }
+
+    affected.sort((a, b) => a.slotNumber - b.slotNumber);
+    return affected;
   }
 
   function addAbsentTeacher() {
@@ -66,7 +108,6 @@ export default function SubstitutePage() {
 
   function removeAbsentTeacher(teacherId: string) {
     setAbsentEntries(prev => prev.filter(e => e.teacherId !== teacherId));
-    // Clear any assignments for this teacher's slots
     setAssignments(prev => {
       const next = { ...prev };
       Object.keys(next).forEach(k => { if (k.startsWith(`${teacherId}_`)) delete next[k]; });
@@ -83,12 +124,12 @@ export default function SubstitutePage() {
     const dayOfWeek = new Date(date).getDay() || 7;
     const busySlots = new Set<number>();
 
-    // Regular timetable (excluding lunch 5)
-    timetable.forEach((e: any) => {
-      if (e.teacherId === teacherId && e.dayOfWeek === dayOfWeek && e.slotNumber !== 5) {
-        busySlots.add(e.slotNumber);
+    const teachingSlots = [1, 2, 3, 4, 6, 7];
+    for (const slotNum of teachingSlots) {
+      if (isTeacherBusyOnTimetable(teacherId, dayOfWeek, slotNum)) {
+        busySlots.add(slotNum);
       }
-    });
+    }
 
     // Saved subs on this date
     subs.forEach((s: any) => {
@@ -107,18 +148,18 @@ export default function SubstitutePage() {
       }
     });
 
-    const teachingSlots = [1, 2, 3, 4, 6, 7];
     return Math.max(0, teachingSlots.length - busySlots.size);
   }
 
   function getFreeTeachers(slot: number, divisionId: string, absentTeacherId: string) {
     const dayOfWeek = new Date(date).getDay() || 7;
+    const busyTeacherIds = new Set<string>();
 
-    const busyTeacherIds = new Set(
-      timetable
-        .filter((e: any) => e.dayOfWeek === dayOfWeek && e.slotNumber === slot)
-        .map((e: any) => e.teacherId)
-    );
+    for (const t of teachers) {
+      if (isTeacherBusyOnTimetable(t.id, dayOfWeek, slot)) {
+        busyTeacherIds.add(t.id);
+      }
+    }
 
     // Saved subs for this slot
     subs.forEach((s: any) => {
@@ -171,6 +212,26 @@ export default function SubstitutePage() {
     setSaving(false);
     setSaveMsg(`✓ ${total} substitution${total !== 1 ? 's' : ''} saved.`);
     setTimeout(() => setSaveMsg(''), 3500);
+  }
+
+  async function deleteSubstitute(id: string) {
+    if (!confirm('Are you sure you want to remove this substitute assignment?')) return;
+    setSaving(true);
+    try {
+      const res = await fetch(`/api/substitute?id=${id}`, { method: 'DELETE' });
+      const data = await res.json();
+      if (data.success) {
+        setSaveMsg('✓ Substitution removed.');
+        await fetchSubs();
+      } else {
+        setSaveMsg(`Error: ${data.error || 'Failed to delete'}`);
+      }
+    } catch {
+      setSaveMsg('An error occurred.');
+    } finally {
+      setSaving(false);
+      setTimeout(() => setSaveMsg(''), 3000);
+    }
   }
 
   // ── Group today's subs by absent teacher ────────────────────────────────────
@@ -396,6 +457,7 @@ export default function SubstitutePage() {
                           <th>Period</th>
                           <th>Class</th>
                           <th>Substitute</th>
+                          <th className="no-print" style={{ width: 100 }}>Actions</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -404,6 +466,15 @@ export default function SubstitutePage() {
                             <td><span className="sub-period-badge">P{s.originalSlotNumber}</span></td>
                             <td style={{ fontWeight: 600 }}>{s.originalDivision?.class?.name}{s.originalDivision?.name}</td>
                             <td><span className="badge badge-green">{s.substituteTeacher?.user?.name}</span></td>
+                            <td className="no-print">
+                              <button
+                                className="btn btn-red btn-sm"
+                                style={{ padding: '2px 8px', fontSize: 11, minHeight: 'auto' }}
+                                onClick={() => deleteSubstitute(s.id)}
+                              >
+                                Remove
+                              </button>
+                            </td>
                           </tr>
                         ))}
                       </tbody>

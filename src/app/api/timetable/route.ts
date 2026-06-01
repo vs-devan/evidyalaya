@@ -79,6 +79,10 @@ export async function POST(req: NextRequest) {
   // Build a quick lookup: subjectId → subject
   const subjectMap = new Map(subjects.map(s => [s.id, s]));
 
+  const divisionSubjects = await prisma.divisionSubject.findMany({
+    where: { division: { class: { tenantId } } },
+  });
+
   // Determine which subjects are "base" (not a language variant themselves)
   // Language variants replace another subject for specific students — we include
   // both the base subject AND its variants, but the engine will only schedule one.
@@ -256,6 +260,101 @@ export async function POST(req: NextRequest) {
     }
   }
 
+  // --- Co-scheduling Analysis ---
+  const variantBaseSubjectIds = new Set(
+    subjects.filter(s => s.isLanguageVariant && s.replacesSubjectId).map(s => s.replacesSubjectId!)
+  );
+
+  const variantTeachersMap = new Map<string, string[]>();
+  for (const s of subjects) {
+    if (s.isLanguageVariant) {
+      const vTeachers = teachers.filter(t => t.subjectMappings.some(sm => sm.subjectId === s.id));
+      variantTeachersMap.set(s.id, vTeachers.map(t => t.id));
+    }
+  }
+
+  const divisionVariantTeachers = new Map<string, Set<string>>();
+  for (const ds of divisionSubjects) {
+    if (ds.useLanguageVariant && ds.languageVariantSubjectId) {
+      const vTeachers = variantTeachersMap.get(ds.languageVariantSubjectId) || [];
+      if (!divisionVariantTeachers.has(ds.divisionId)) {
+        divisionVariantTeachers.set(ds.divisionId, new Set());
+      }
+      const set = divisionVariantTeachers.get(ds.divisionId)!;
+      for (const tId of vTeachers) {
+        set.add(tId);
+      }
+    }
+  }
+
+  for (const cls of classes) {
+    const classDivs = cls.divisions;
+    if (classDivs.length <= 1) continue;
+
+    const adj = new Map<string, string[]>();
+    for (const d of classDivs) adj.set(d.id, []);
+
+    for (let i = 0; i < classDivs.length; i++) {
+      for (let j = i + 1; j < classDivs.length; j++) {
+        const d1 = classDivs[i];
+        const d2 = classDivs[j];
+        const t1 = divisionVariantTeachers.get(d1.id) || new Set();
+        const t2 = divisionVariantTeachers.get(d2.id) || new Set();
+        let share = false;
+        for (const tId of t1) {
+          if (t2.has(tId)) { share = true; break; }
+        }
+        if (share) {
+          adj.get(d1.id)!.push(d2.id);
+          adj.get(d2.id)!.push(d1.id);
+        }
+      }
+    }
+
+    const visited = new Set<string>();
+    for (const d of classDivs) {
+      if (!visited.has(d.id)) {
+        const comp: string[] = [];
+        const queue = [d.id];
+        visited.add(d.id);
+        while (queue.length > 0) {
+          const u = queue.shift()!;
+          comp.push(u);
+          for (const v of adj.get(u) || []) {
+            if (!visited.has(v)) {
+              visited.add(v);
+              queue.push(v);
+            }
+          }
+        }
+        const hasVariantTeachers = comp.some(divId => (divisionVariantTeachers.get(divId)?.size ?? 0) > 0);
+        if (comp.length > 1 && hasVariantTeachers) {
+          const leadId = comp[0];
+          const leadInput = divisionInputs.find(di => di.id === leadId);
+          if (leadInput) {
+            leadInput.coScheduledDivisions = [];
+            for (let idx = 1; idx < comp.length; idx++) {
+              const followerId = comp[idx];
+              const followerInput = divisionInputs.find(di => di.id === followerId);
+              if (followerInput) {
+                followerInput.isFollowerDivision = true;
+                for (const baseId of variantBaseSubjectIds) {
+                  const fSub = followerInput.subjects.find(s => s.subjectId === baseId);
+                  if (fSub) {
+                    leadInput.coScheduledDivisions.push({
+                      divisionId: followerId,
+                      teacherId: fSub.teacherId,
+                    });
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
   if (divisionInputs.length === 0) {
     return NextResponse.json({
       success: false,
@@ -292,6 +391,8 @@ export async function POST(req: NextRequest) {
       eveningPriority: s.eveningPriority,
       consecutiveSlots: s.consecutiveSlots,
       periodsPerWeek: s.periodsPerWeek,
+      isLanguageVariant: s.isLanguageVariant,
+      replacesSubjectId: s.replacesSubjectId,
     })),
     teachers: teachers.map(t => ({
       id: t.id,

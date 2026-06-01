@@ -67,6 +67,7 @@ export const authOptions: NextAuthOptions = {
       if (trigger === 'update' && session) {
         if (session.name) token.name = session.name;
         if (session.username) token.username = session.username;
+        if (session.mustChangePassword !== undefined) token.mustChangePassword = session.mustChangePassword;
       }
       return token;
     },

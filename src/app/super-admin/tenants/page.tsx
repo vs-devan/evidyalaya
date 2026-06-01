@@ -77,10 +77,18 @@ export default function TenantsPage() {
                 </div>
                 <hr style={{ margin: '16px 0', border: 'none', borderTop: '1px solid var(--border-color)' }} />
                 <div className="form-row">
-                  <div className="form-group"><label className="form-label">Admin Name</label><input className="form-input" value={form.adminName} onChange={e => setForm({ ...form, adminName: e.target.value })} /></div>
-                  <div className="form-group"><label className="form-label">Username</label><input className="form-input" value={form.adminUsername} onChange={e => setForm({ ...form, adminUsername: e.target.value })} /></div>
+                  <div className="form-group"><label className="form-label">Admin Name</label><input className="form-input" value={form.adminName} onChange={e => setForm({ ...form, adminName: e.target.value })} placeholder="e.g., Principal" /></div>
+                  <div className="form-group">
+                    <label className="form-label">Username</label>
+                    <input className="form-input" value={form.adminUsername} onChange={e => setForm({ ...form, adminUsername: e.target.value })} placeholder="Leave blank to auto-generate" />
+                    <span className="form-hint">Format: admin_&lt;school_code&gt;</span>
+                  </div>
                 </div>
-                <div className="form-group"><label className="form-label">Password</label><input className="form-input" type="password" value={form.adminPassword} onChange={e => setForm({ ...form, adminPassword: e.target.value })} /></div>
+                <div className="form-group">
+                  <label className="form-label">Password</label>
+                  <input className="form-input" type="password" value={form.adminPassword} onChange={e => setForm({ ...form, adminPassword: e.target.value })} placeholder="Leave blank to auto-generate" />
+                  <span className="form-hint">Format: &lt;school_code&gt;admin</span>
+                </div>
               </div>
               <div className="modal-footer">
                 <button type="button" className="btn btn-secondary" onClick={() => setShowModal(false)}>Cancel</button>

@@ -57,7 +57,7 @@ export async function POST(req: NextRequest) {
   const tenantCode = division.class.tenant.code;
   const classDiv = `${division.class.name}${division.name}`.toLowerCase();
   const username = `${tenantCode}_${classDiv}_${String(rollNumber).padStart(2, '0')}`;
-  const pwd = generatePassword();
+  const pwd = `student${tenantCode}`;
   const hashed = await hashPassword(pwd);
 
   const user = await prisma.user.create({

@@ -34,28 +34,38 @@ export async function POST(req: NextRequest) {
   const body = await req.json();
   const { name, teacherCode, penNo, designation, username, password, phone, email, subjectIds, classTeacherDivisionId, features } = body;
 
-  if (!name || !teacherCode || !designation || !username) {
+  if (!name || !teacherCode || !designation) {
     return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
   }
 
-  const existingUser = await prisma.user.findUnique({ where: { username } });
+  const tenant = await prisma.tenant.findUnique({
+    where: { id: session.user.tenantId },
+  });
+  if (!tenant) {
+    return NextResponse.json({ error: 'Tenant not found' }, { status: 404 });
+  }
+  const schoolCode = tenant.code;
+
+  const finalUsername = (username && username.trim()) || `${teacherCode.trim()}_${schoolCode}`;
+  const finalPassword = password || `${schoolCode}${teacherCode.trim()}`;
+
+  const existingUser = await prisma.user.findUnique({ where: { username: finalUsername } });
   if (existingUser) {
     return NextResponse.json({ error: 'Username already exists' }, { status: 400 });
   }
 
-  const pwd = password || generatePassword();
-  const hashed = await hashPassword(pwd);
+  const hashed = await hashPassword(finalPassword);
 
   const user = await prisma.user.create({
     data: {
       tenantId: session.user.tenantId,
-      username,
+      username: finalUsername,
       password: hashed,
       name,
       role: 'TEACHER',
       phone,
       email,
-      mustChangePassword: !password,
+      mustChangePassword: true,
       createdById: session.user.id,
       teacher: {
         create: {
@@ -86,7 +96,7 @@ export async function POST(req: NextRequest) {
 
   return NextResponse.json({
     success: true,
-    data: { ...user, generatedPassword: !password ? pwd : undefined },
+    data: { ...user, generatedPassword: !password ? finalPassword : undefined },
   }, { status: 201 });
 }
 
