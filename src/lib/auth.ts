@@ -51,7 +51,7 @@ export const authOptions: NextAuthOptions = {
     }),
   ],
   callbacks: {
-    async jwt({ token, user }) {
+    async jwt({ token, user, trigger, session }) {
       if (user) {
         token.id = user.id;
         token.username = (user as any).username;
@@ -63,6 +63,10 @@ export const authOptions: NextAuthOptions = {
         token.teacherCode = (user as any).teacherCode;
         token.mustChangePassword = (user as any).mustChangePassword;
         token.features = (user as any).features;
+      }
+      if (trigger === 'update' && session) {
+        if (session.name) token.name = session.name;
+        if (session.username) token.username = session.username;
       }
       return token;
     },

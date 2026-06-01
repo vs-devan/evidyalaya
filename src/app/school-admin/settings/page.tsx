@@ -7,7 +7,13 @@ import DashboardLayout from '@/components/DashboardLayout';
 const DAY_LABELS: Record<number, string> = { 1: 'Monday', 2: 'Tuesday', 3: 'Wednesday', 4: 'Thursday', 5: 'Friday', 6: 'Saturday' };
 
 export default function SettingsPage() {
-  const { data: session } = useSession();
+  const { data: session, update } = useSession();
+
+  // ── Profile Edit ──────────────────────────────────────────────────────────
+  const [showProfileModal, setShowProfileModal] = useState(false);
+  const [profileForm, setProfileForm] = useState({ name: '', username: '' });
+  const [profileLoading, setProfileLoading] = useState(false);
+  const [profileMsg, setProfileMsg] = useState('');
 
   // ── Password ────────────────────────────────────────────────────────────
   const [showPwdModal, setShowPwdModal] = useState(false);
@@ -60,6 +66,46 @@ export default function SettingsPage() {
     if (data.success) { setPwdMsg('Password updated successfully'); setShowPwdModal(false); }
     else setPwdMsg(data.error || 'Failed to update');
     setPwdLoading(false);
+  }
+
+  function openProfileModal() {
+    setProfileForm({
+      name: session?.user?.name || '',
+      username: session?.user?.username || '',
+    });
+    setProfileMsg('');
+    setShowProfileModal(true);
+  }
+
+  async function handleProfileSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setProfileLoading(true);
+    setProfileMsg('');
+
+    try {
+      const res = await fetch('/api/auth/profile', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(profileForm),
+      });
+      const data = await res.json();
+
+      if (data.success) {
+        // Update client session
+        await update({
+          name: profileForm.name,
+          username: profileForm.username,
+        });
+        setProfileMsg('✓ Account details updated successfully');
+        setShowProfileModal(false);
+      } else {
+        setProfileMsg(data.error || 'Failed to update account details');
+      }
+    } catch {
+      setProfileMsg('An error occurred. Please try again.');
+    } finally {
+      setProfileLoading(false);
+    }
   }
 
   // Slot labels for the period grid preview
@@ -216,13 +262,17 @@ export default function SettingsPage() {
 
         {/* ── Account Info ── */}
         <div className="card" style={{ marginBottom: 20 }}>
-          <div className="card-header"><h3>Account Info</h3></div>
+          <div className="card-header">
+            <h3>Account Info</h3>
+            <button className="btn btn-secondary btn-sm" onClick={openProfileModal}>Edit Details</button>
+          </div>
           <div className="card-body">
             <div className="form-row">
               <div><label className="form-label">Name</label><p>{session?.user?.name}</p></div>
               <div><label className="form-label">Username</label><p>{session?.user?.username}</p></div>
               <div><label className="form-label">Role</label><p><span className="badge badge-green">{session?.user?.role}</span></p></div>
             </div>
+            {profileMsg && <p style={{ marginTop: 12, color: profileMsg.includes('success') ? 'var(--success)' : 'var(--danger)', fontSize: 13 }}>{profileMsg}</p>}
           </div>
         </div>
 
@@ -250,6 +300,50 @@ export default function SettingsPage() {
               <div className="modal-footer">
                 <button type="button" className="btn btn-secondary" onClick={() => setShowPwdModal(false)}>Cancel</button>
                 <button type="submit" className="btn btn-primary" disabled={pwdLoading}>{pwdLoading ? 'Updating...' : 'Update Password'}</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {showProfileModal && (
+        <div className="modal-overlay" onClick={() => setShowProfileModal(false)}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>Edit Account Details</h3>
+              <button className="btn btn-ghost btn-icon" onClick={() => setShowProfileModal(false)}>✕</button>
+            </div>
+            <form onSubmit={handleProfileSubmit}>
+              <div className="modal-body">
+                {profileMsg && !profileMsg.includes('success') && (
+                  <div className="form-error" style={{ marginBottom: 16 }}>{profileMsg}</div>
+                )}
+                <div className="form-group">
+                  <label className="form-label">Full Name</label>
+                  <input
+                    className="form-input"
+                    type="text"
+                    required
+                    value={profileForm.name}
+                    onChange={e => setProfileForm({ ...profileForm, name: e.target.value })}
+                  />
+                </div>
+                <div className="form-group">
+                  <label className="form-label">Username</label>
+                  <input
+                    className="form-input"
+                    type="text"
+                    required
+                    value={profileForm.username}
+                    onChange={e => setProfileForm({ ...profileForm, username: e.target.value })}
+                  />
+                </div>
+              </div>
+              <div className="modal-footer">
+                <button type="button" className="btn btn-secondary" onClick={() => setShowProfileModal(false)}>Cancel</button>
+                <button type="submit" className="btn btn-primary" disabled={profileLoading}>
+                  {profileLoading ? 'Saving...' : 'Save Changes'}
+                </button>
               </div>
             </form>
           </div>

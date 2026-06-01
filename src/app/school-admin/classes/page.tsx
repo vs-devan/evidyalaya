@@ -114,7 +114,7 @@ export default function ClassesPage() {
             <button className="btn btn-primary" style={{ marginTop: 16 }} onClick={openAddModal}>+ Add Class</button>
           </div></div>
         ) : (
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 16 }}>
+          <div className="class-card-grid">
             {classes.map(cls => (
               <div key={cls.id} className="card">
                 <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>

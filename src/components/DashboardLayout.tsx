@@ -92,14 +92,20 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
   // Close sidebar on route change
   useEffect(() => { setSidebarOpen(false); }, [pathname]);
 
-  // Prevent body scroll when sidebar is open on mobile
+  // Prevent body scroll and handle escape key when sidebar is open on mobile
   useEffect(() => {
     if (sidebarOpen) {
       document.body.style.overflow = 'hidden';
-    } else {
-      document.body.style.overflow = '';
+      const handleKeyDown = (e: KeyboardEvent) => {
+        if (e.key === 'Escape') setSidebarOpen(false);
+      };
+      window.addEventListener('keydown', handleKeyDown);
+      return () => {
+        document.body.style.overflow = '';
+        window.removeEventListener('keydown', handleKeyDown);
+      };
     }
-    return () => { document.body.style.overflow = ''; };
+    return () => {};
   }, [sidebarOpen]);
 
   if (!session?.user) return null;
@@ -131,7 +137,11 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
       />
 
       {/* Sidebar */}
-      <aside className={`sidebar ${sidebarOpen ? 'open' : ''}`}>
+      <aside
+        className={`sidebar ${sidebarOpen ? 'open' : ''}`}
+        role={sidebarOpen ? "dialog" : undefined}
+        aria-modal={sidebarOpen ? "true" : undefined}
+      >
         {/* Brand */}
         <div className="sidebar-brand">
           <div className="sidebar-brand-icon">eV</div>

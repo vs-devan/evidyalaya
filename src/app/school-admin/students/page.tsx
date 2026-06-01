@@ -203,7 +203,8 @@ export default function StudentsPage() {
             <div className="card-header">
               <h3>Students ({students.length})</h3>
             </div>
-            <div className="table-container">
+            {/* Desktop Table View */}
+            <div className="table-container desktop-only">
               <table className="data-table">
                 <thead>
                   <tr>
@@ -241,6 +242,48 @@ export default function StudentsPage() {
                   )}
                 </tbody>
               </table>
+            </div>
+
+            {/* Mobile Card View */}
+            <div className="mobile-only" style={{ padding: '0 16px' }}>
+              <div className="student-cards-grid">
+                {students.map((s: any) => (
+                  <div key={s.id} className="student-card">
+                    <div className="student-card-header">
+                      <strong>Roll #{s.rollNumber}</strong>
+                      <span className={`badge ${s.user?.isActive ? 'badge-green' : 'badge-red'}`}>
+                        {s.user?.isActive ? 'Active' : 'Inactive'}
+                      </span>
+                    </div>
+                    <div className="student-card-row">
+                      <span style={{ color: 'var(--gray-500)' }}>Name:</span>
+                      <strong>{s.name}</strong>
+                    </div>
+                    <div className="student-card-row">
+                      <span style={{ color: 'var(--gray-500)' }}>Parent:</span>
+                      <span>{s.parentName || '—'}</span>
+                    </div>
+                    <div className="student-card-row">
+                      <span style={{ color: 'var(--gray-500)' }}>Phone:</span>
+                      <span>{s.parentPhone || '—'}</span>
+                    </div>
+                    <div className="student-card-row">
+                      <span style={{ color: 'var(--gray-500)' }}>Username:</span>
+                      <span className="badge badge-gray">{s.user?.username || '—'}</span>
+                    </div>
+                    <div className="student-card-actions">
+                      <button className="btn btn-secondary btn-sm" onClick={() => openEditModal(s)}>Edit</button>
+                      {s.user?.id && (
+                        <button className="btn btn-ghost btn-sm" onClick={() => { setPwdTarget({ id: s.user.id, name: s.name }); setShowPwdModal(true); setPwdForm({ newPassword: '', confirmAdminPassword: '' }); setMessage(''); }}>Reset Pwd</button>
+                      )}
+                      <button className="btn btn-red btn-sm" onClick={() => deleteStudent(s.id)}>Delete</button>
+                    </div>
+                  </div>
+                ))}
+                {students.length === 0 && (
+                  <div style={{ textAlign: 'center', padding: 24, color: 'var(--gray-400)' }}>No students in this division</div>
+                )}
+              </div>
             </div>
           </div>
         )}

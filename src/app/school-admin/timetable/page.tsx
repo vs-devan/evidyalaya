@@ -410,17 +410,8 @@ export default function TimetablePage() {
 
         {/* ─── Generation Progress Overlay ─────────────────────────────── */}
         {generating && genProgress && (
-          <div style={{
-            position: 'fixed', inset: 0, zIndex: 9999,
-            background: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(4px)',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-          }}>
-            <div style={{
-              background: 'var(--card-bg, #fff)',
-              borderRadius: 20, padding: '32px 36px',
-              width: '100%', maxWidth: 560,
-              boxShadow: '0 24px 80px rgba(0,0,0,0.25)',
-            }}>
+          <div className="tt-progress-overlay">
+            <div className="tt-progress-modal">
               {/* Header */}
               <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 24 }}>
                 <div style={{
@@ -555,10 +546,7 @@ export default function TimetablePage() {
 
             {/* Score breakdown grid */}
             {result.scoreBreakdown && (
-              <div style={{
-                display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))',
-                gap: 8, margin: '12px 0',
-              }}>
+              <div className="tt-score-grid">
                 {[
                   { label: 'Fill Rate', value: result.scoreBreakdown.fillRate, icon: '📊' },
                   { label: 'Day Uniqueness', value: result.scoreBreakdown.subjectDayUniqueness, icon: '📅' },

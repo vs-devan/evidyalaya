@@ -92,11 +92,11 @@ interface SolverConfig {
 //  SA CONSTANTS
 // ═════════════════════════════════════════════════════════════════════════════
 
-const SA_PASSES         = 10;
-const SA_ITERATIONS     = 100_000;
+const SA_PASSES         = 20;
+const SA_ITERATIONS     = 150_000;
 const SA_T_START        = 8.0;
 const SA_T_MIN          = 0.0005;
-const SA_REHEAT_STALL   = 6_000;   // reheat if no improvement for N iterations
+const SA_REHEAT_STALL   = 8_000;   // reheat if no improvement for N iterations
 const SA_REHEAT_FACTOR  = 4;       // multiply temp by this on reheat
 
 // Score weights (must sum to 100)
@@ -1107,8 +1107,8 @@ export async function solveTimetable(
 
   let lastBestScore = initScore.total;
   let noImprovementPasses = 0;
-  const PATIENCE = 2;
-  const THRESHOLD = 0.05;
+  const PATIENCE = 3;
+  const THRESHOLD = 0.01;
 
   for (let pass = 1; pass <= SA_PASSES; pass++) {
     const pct = 35 + Math.round((pass / SA_PASSES) * 45);
@@ -1119,8 +1119,9 @@ export async function solveTimetable(
     // If not the first pass, start from the best known state
     if (pass > 1) {
       restoreState(state, bestState.asgn);
-      // Add small perturbation to escape local optimum
-      perturbState(state, Math.floor(state.assignedCount * 0.05));
+      // Adaptive perturbation: increase escape intensity with each stalled pass
+      const perturbPct = Math.min(0.03 + noImprovementPasses * 0.01, 0.08);
+      perturbState(state, Math.floor(state.assignedCount * perturbPct));
     }
 
     const result = runSAPass(state, SA_ITERATIONS);
@@ -1135,13 +1136,13 @@ export async function solveTimetable(
       bestState = { asgn: [...state.asgn], score };
     }
 
-    // Early exit if we hit perfect score
-    if (bestState.score.total >= 100) {
-      emit('annealing', pct, `Perfect score achieved (100.0/100)! Stopping early.`, `Optimization complete.`);
+    // Early exit if we hit near-perfect score
+    if (bestState.score.total >= 99.5) {
+      emit('annealing', pct, `Near-perfect score achieved (${bestState.score.total.toFixed(1)}/100)! Stopping early.`, `Optimization complete.`);
       break;
     }
 
-    // Check for stabilization (gradient descent-like patience)
+    // Check for stabilization (gradient-based patience)
     const improvement = bestState.score.total - lastBestScore;
     if (improvement < THRESHOLD) {
       noImprovementPasses++;
@@ -1151,7 +1152,7 @@ export async function solveTimetable(
     }
 
     if (noImprovementPasses >= PATIENCE) {
-      emit('annealing', pct, `Score stabilized (no improvement for ${PATIENCE} passes). Stopping early.`, `Optimization complete.`);
+      emit('annealing', pct, `Score gradient minimized (no improvement >${THRESHOLD} for ${PATIENCE} passes). Stopping.`, `Final score: ${bestState.score.total.toFixed(1)}/100`);
       break;
     }
 

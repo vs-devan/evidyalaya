@@ -143,7 +143,7 @@ export default function SchoolAdminDashboard() {
           <div className="card-body">
             <div className="quick-actions-grid">
               {quickActions.map(a => (
-                <button key={a.href} className="btn btn-secondary" style={{ flexDirection: 'column', padding: '20px 16px', height: 'auto', alignItems: 'flex-start' }}
+                <button key={a.href} className="btn btn-secondary quick-action-btn"
                   onClick={() => router.push(a.href)}>
                   <span style={{ marginBottom: 8, color: 'var(--primary-color)' }}><DashboardIcon name={a.icon} style={{ width: 28, height: 28 }} /></span>
                   <strong style={{ fontSize: 13 }}>{a.label}</strong>
