@@ -203,7 +203,7 @@ export default function TeachersPage() {
   function handleDownloadTemplate() {
     const sampleData = [{
       'Teacher Code': 'T001', 'Name': 'Anil Kumar', 'Designation (HSA/UPSA)': 'HSA',
-      'PEN Number': '123456', 'Username': 'anil_tshss', 'Password (Optional)': '',
+      'PEN Number': '123456', 'Username': 't001.tshss', 'Password (Optional)': '',
       'Subject Codes (Comma Separated)': 'MAL1,MAL2',
       'Class Teacher Division (e.g. 8A)': '8A',
       'Feature Access (e.g. ATTENDANCE,RESULTS)': 'ATTENDANCE,RESULTS'
@@ -403,12 +403,12 @@ export default function TeachersPage() {
                       <div className="form-group">
                         <label className="form-label">Username</label>
                         <input className="form-input" value={form.username} onChange={e => setForm({ ...form, username: e.target.value })} placeholder="Leave blank to auto-generate" />
-                        <span className="form-hint">Format: &lt;teacher_code&gt;_&lt;school_code&gt;</span>
+                        <span className="form-hint">Format: &lt;teacher_code&gt;.&lt;school_code&gt; (lowercased)</span>
                       </div>
                       <div className="form-group">
                         <label className="form-label">Password</label>
                         <input className="form-input" type="password" value={form.password} onChange={e => setForm({ ...form, password: e.target.value })} placeholder="Leave blank to auto-generate" />
-                        <span className="form-hint">Format: &lt;school_code&gt;&lt;teacher_code&gt;</span>
+                        <span className="form-hint">Format: &lt;SCHOOL_CODE&gt;@&lt;TEACHER_CODE&gt;</span>
                       </div>
                     </div>
                   )}

@@ -46,8 +46,8 @@ export async function POST(req: NextRequest) {
   }
   const schoolCode = tenant.code;
 
-  const finalUsername = (username && username.trim()) || `${teacherCode.trim()}_${schoolCode}`;
-  const finalPassword = password || `${schoolCode}${teacherCode.trim()}`;
+  const finalUsername = (username && username.trim().toLowerCase()) || `${teacherCode.trim().toLowerCase()}.${schoolCode.toLowerCase()}`;
+  const finalPassword = password || `${schoolCode.toUpperCase()}@${teacherCode.trim().toUpperCase()}`;
 
   const existingUser = await prisma.user.findUnique({ where: { username: finalUsername } });
   if (existingUser) {
