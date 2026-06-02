@@ -1,0 +1,255 @@
+\documentclass[11pt,a4paper]{article}
+
+% --- Packages ---
+\usepackage[utf8]{inputenc}
+\usepackage[margin=1in]{geometry}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{booktabs}
+\usepackage{fancyhdr}
+\usepackage{titlesec}
+\usepackage{enumitem}
+\usepackage[most]{tcolorbox}
+
+% --- Color Palette ---
+\definecolor{primary}{HTML}{1E3A8A}      % Deep Indigo
+\definecolor{secondary}{HTML}{3B82F6}    % Sky Blue
+\definecolor{success}{HTML}{10B981}      % Emerald Green
+\definecolor{dark}{HTML}{1F2937}         % Charcoal
+\definecolor{light}{HTML}{F3F4F6}        % Light Gray
+
+% --- Layout & Header/Footer ---
+\pagestyle{fancy}
+\fancyhf{}
+\rhead{\textcolor{primary}{\bfseries eVidyalaya Teacher Guide}}
+\lhead{TSHSS Vercel Portal Reference}
+\rfoot{Page \thepage}
+\lfoot{\copyright\ 2026 TSHSS. All rights reserved.}
+\renewcommand{\headrulewidth}{0.5pt}
+\renewcommand{\footrulewidth}{0.5pt}
+
+% --- Section Styling ---
+\titleformat{\section}{\color{primary}\normalfont\Large\bfseries}{\thesection}{1em}{}
+\titleformat{\subsection}{\color{secondary}\normalfont\large\bfseries}{\thesubsection}{1em}{}
+
+% --- Custom Boxes ---
+\newtcolorbox{tipbox}[1][]{
+  colback=success!5!white,
+  colframe=success,
+  fonttitle=\bfseries,
+  title=Pro-Tip,
+  enhanced,
+  attach boxed title to top left={yshift=-2mm,xshift=2mm},
+  boxed title style={colback=success},
+  #1
+}
+
+\newtcolorbox{warningbox}[1][]{
+  colback=orange!5!white,
+  colframe=orange!80!black,
+  fonttitle=\bfseries,
+  title=Important Note,
+  enhanced,
+  attach boxed title to top left={yshift=-2mm,xshift=2mm},
+  boxed title style={colback=orange!80!black},
+  #1
+}
+
+\newtcolorbox{infobox}[1][]{
+  colback=primary!5!white,
+  colframe=primary,
+  fonttitle=\bfseries,
+  title=Reference,
+  enhanced,
+  attach boxed title to top left={yshift=-2mm,xshift=2mm},
+  boxed title style={colback=primary},
+  #1
+}
+
+% --- Document Details ---
+\title{
+  \vspace{-1.5cm}
+  \includegraphics[width=0.25\textwidth]{school_logo.png}\\[0.5cm]
+  \textcolor{primary}{\Huge\bfseries eVidyalaya Portal}\\
+  \large\textcolor{dark}{Vercel Deployed System: Teacher User Guide}
+}
+\author{\bfseries Portal Administration}
+\date{Academic Year 2025--2026}
+
+% --- Begin Document ---
+\begin{document}
+
+\maketitle
+\thispagestyle{empty}
+
+\begin{abstract}
+Welcome to the \textbf{eVidyalaya} portal. This document is a comprehensive guide designed to help teachers navigate and utilize the school portal for daily tasks. Key modules covered include accessing your account on the live Vercel deployment, viewing and printing timetables, marking student attendance, entering examination marks (results), and reading school-wide broadcast announcements.
+\end{abstract}
+
+\vspace{1.5cm}
+\tableofcontents
+\newpage
+
+% ==============================================================================
+\section{Accessing the Portal}
+% ==============================================================================
+The live system is hosted on Vercel and is fully responsive, allowing you to access it from any web browser on your smartphone, tablet, or PC.
+
+\subsection{Portal Address}
+Access the portal by navigating to the following address:
+\begin{infobox}
+\begin{description}[leftmargin=3.5cm]
+    \item[Production URL:] \href{https://evidyalaya-tshss.vercel.app}{https://evidyalaya-tshss.vercel.app} \\ (Replace with your actual Vercel deployment URL)
+\end{description}
+\end{infobox}
+
+\subsection{Login Credentials}
+Use the formalized pattern below to log in to your teacher account:
+
+\begin{infobox}
+\begin{description}[leftmargin=3.5cm]
+    \item[Username Format:] \texttt{<teacher\_code>.40010} (all lowercase)
+    \item[Default Password:] \texttt{<teacher\_code>@40010} (all lowercase)
+\end{description}
+\end{infobox}
+
+For example, if your teacher code is \textbf{t001}:
+\begin{itemize}
+    \item \textbf{Username:} \texttt{t001.40010}
+    \item \textbf{Password:} \texttt{t001@40010}
+\end{itemize}
+
+\subsection{First-Time Login \& Password Change}
+When logging in for the first time, the portal will prompt you to change your default password for security.
+\begin{enumerate}
+    \item Go to the live production URL.
+    \item Enter your username and default password, then click \textbf{Login}.
+    \item In the change-password modal, choose a strong password (minimum 6 characters).
+    \item Save and use your new credentials for future logins.
+\end{enumerate}
+
+\begin{figure}[htbp]
+    \centering
+    % Capture a screenshot of your live login screen, save as "login.png" and upload to Overleaf
+    \includegraphics[width=0.75\textwidth]{login.png}
+    \caption{The eVidyalaya Production Login Screen}
+    \label{fig:login}
+\end{figure}
+
+% ==============================================================================
+\section{Dashboard Overview}
+% ==============================================================================
+Once logged in, the homepage displays your dashboard. You can access individual pages using the sidebar menu (on desktop) or the slide-out navigation drawer (on mobile).
+
+\begin{figure}[htbp]
+    \centering
+    % Capture a screenshot of the homepage, save as "dashboard.png" and upload to Overleaf
+    \includegraphics[width=0.8\textwidth]{dashboard.png}
+    \caption{The Teacher Portal Dashboard}
+    \label{fig:dashboard}
+\end{figure}
+
+\begin{tipbox}
+To access the portal on your phone, you can bookmark the URL on your home screen for quick, app-like launches.
+\end{tipbox}
+
+\newpage
+
+% ==============================================================================
+\section{Weekly Timetable}
+% ==============================================================================
+The \textbf{Timetable} module shows your custom schedule and covers parallel options (e.g., Sanskrit/Arabic/Urdu running concurrently with Malayalam I).
+
+\subsection{Viewing Your Schedule}
+\begin{itemize}
+    \item Click the \textbf{Timetable} option in the sidebar.
+    \item The screen displays a grid showing your weekly classes, time slots, and room allocations.
+    \item Parallel options appear consolidated (e.g., \texttt{MAL1/ARAB/SANS}) with respective teacher codes below.
+\end{itemize}
+
+\begin{figure}[htbp]
+    \centering
+    % Capture a screenshot of the timetable grid, save as "timetable.png" and upload to Overleaf
+    \includegraphics[width=0.8\textwidth]{timetable.png}
+    \caption{Weekly Timetable Grid}
+    \label{fig:timetable}
+\end{figure}
+
+\subsection{Printing Your Timetable}
+To print:
+\begin{enumerate}
+    \item Click the \textbf{Print} icon/button above your timetable.
+    \item The system formats the grid for standard A4 paper, removing the sidebar and header.
+    \item Choose your printer or select \textbf{Save as PDF}.
+\end{enumerate}
+
+% ==============================================================================
+\section{Student Attendance}
+% ==============================================================================
+Class teachers can record daily attendance directly from their mobile phones.
+
+\subsection{Marking Attendance}
+\begin{enumerate}
+    \item Open the \textbf{Attendance} module.
+    \item Select the active Date and Class Division.
+    \item Toggle students between:
+    \begin{itemize}
+        \item \textcolor{success}{\bfseries Present (P)} — Default.
+        \item \textcolor{orange}{\bfseries Late (L)} — Late arrival.
+        \item \textcolor{red}{\bfseries Absent (A)} — Absent.
+    \end{itemize}
+    \item Verify the class summary numbers and click \textbf{Submit / Save Attendance}.
+\end{enumerate}
+
+\begin{figure}[htbp]
+    \centering
+    % Capture a screenshot of the attendance page, save as "attendance.png" and upload to Overleaf
+    \includegraphics[width=0.8\textwidth]{attendance.png}
+    \caption{Marking Student Attendance}
+    \label{fig:attendance}
+\end{figure}
+
+\newpage
+
+% ==============================================================================
+\section{Student Results & Exam Marks}
+% ==============================================================================
+This module allows you to record subject marks for terminal, mid-term, and final exams.
+
+\subsection{Entering Exam Marks}
+\begin{enumerate}
+    \item Click on the \textbf{Results} module in the sidebar.
+    \item Select the active \textbf{Examination}, \textbf{Class / Division}, and your \textbf{Subject}.
+    \item Enter the marks scored by each student (out of the maximum marks displayed).
+    \item Click \textbf{Save Marks} at the bottom of the table to persist the data.
+\end{enumerate}
+
+\begin{figure}[htbp]
+    \centering
+    % Capture a screenshot of the marks entry sheet, save as "results.png" and upload to Overleaf
+    \includegraphics[width=0.8\textwidth]{results.png}
+    \caption{Student Examination Marks Entry}
+    \label{fig:results}
+\end{figure}
+
+\begin{warningbox}
+Ensure that you save the entries before switching to another page, to avoid losing unsaved modifications.
+\end{warningbox}
+
+% ==============================================================================
+\section{School Announcements}
+% ==============================================================================
+The \textbf{Messages} module displays broadcast alerts, circulars, and official announcements. You will receive a notification badge on the sidebar whenever a new announcement is posted.
+
+% ==============================================================================
+\section{Frequently Asked Questions (FAQ)}
+% ==============================================================================
+
+\subsection{Why is there a slight delay when opening the page first thing in the morning?}
+The live Vercel system connects to a serverless database that sleeps during extended periods of inactivity (e.g., overnight) to save costs. Waking up the database takes **2 to 3 seconds** on the very first click of the day. Subsequent requests will load instantly.
+
+\subsection{What should I do if I forget my password?}
+Passwords are encrypted in the database. If you forget your password, contact the school administrator. They can click the \textbf{"Reset Pwd"} button next to your name in the Teacher Management dashboard to reset it back to your default (\texttt{<teacher\_code>@40010}).
+
+\end{document}
