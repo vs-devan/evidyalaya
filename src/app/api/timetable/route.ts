@@ -57,9 +57,11 @@ export async function POST(req: NextRequest) {
   const generationWarnings: string[] = [];
 
   let activeConstraints: string[] = [];
+  let peGroups: { subjectId: string; divisionIds: string[] }[] = [];
   try {
     const body = await req.json();
     activeConstraints = body.constraints || [];
+    peGroups = Array.isArray(body.peGroups) ? body.peGroups : [];
   } catch (e) {
     // No body or invalid JSON (fallback to empty, meaning all default built-ins apply)
   }
@@ -276,6 +278,73 @@ export async function POST(req: NextRequest) {
           }
         }
 
+  // ─── PE Group Co-scheduling Injection ────────────────────────────────
+  // Construct default PE groups if none are provided
+  if (peGroups.length === 0) {
+    const peSub = subjects.find(s => 
+      s.code === 'PE' || s.code === 'PET' || s.name.toLowerCase().includes('physical education')
+    );
+    if (peSub) {
+      const allDivs = classes.flatMap((c: any) => 
+        c.divisions?.map((d: any) => ({ ...d, className: c.name, label: `${c.name}${d.name}` })) || []
+      );
+      const div5A = allDivs.find((d: any) => d.label === '5A');
+      const div5B = allDivs.find((d: any) => d.label === '5B');
+      const div6A = allDivs.find((d: any) => d.label === '6A');
+      const div6B = allDivs.find((d: any) => d.label === '6B');
+      if (div5A && div5B) {
+        peGroups.push({ subjectId: peSub.id, divisionIds: [div5A.id, div5B.id] });
+      }
+      if (div6A && div6B) {
+        peGroups.push({ subjectId: peSub.id, divisionIds: [div6A.id, div6B.id] });
+      }
+    }
+  }
+
+  // For each configured PE group, remove the shared subject from follower
+  // divisions and wire up coScheduledDivisions on the lead division's PE subject.
+  const peGroupSubjectIds = new Set<string>();
+  for (const group of peGroups) {
+    if (!group.subjectId || !Array.isArray(group.divisionIds) || group.divisionIds.length < 2) continue;
+
+    const validDivIds = group.divisionIds.filter(id =>
+      divisionInputs.some(di => di.id === id)
+    );
+    if (validDivIds.length < 2) continue;
+
+    peGroupSubjectIds.add(group.subjectId);
+
+    const [leadId, ...followerIds] = validDivIds;
+    const leadInput = divisionInputs.find(di => di.id === leadId);
+    if (!leadInput) continue;
+
+    const leadPeSub = leadInput.subjects.find(s => s.subjectId === group.subjectId);
+    if (!leadPeSub) continue;
+
+    // Initialise coScheduledDivisions on lead's PE subject if needed
+    if (!leadPeSub.coScheduledDivisions) leadPeSub.coScheduledDivisions = [];
+
+    for (const followerId of followerIds) {
+      const followerInput = divisionInputs.find(di => di.id === followerId);
+      if (!followerInput) continue;
+
+      // Find the PE subject's teacher for this follower
+      const followerPeSub = followerInput.subjects.find(s => s.subjectId === group.subjectId);
+      if (!followerPeSub) continue;
+
+      // Wire follower into lead's PE subject co-scheduled list
+      leadPeSub.coScheduledDivisions.push({
+        divisionId: followerId,
+        teacherId: followerPeSub.teacherId,
+      });
+
+      // Remove PE subject from follower so solver doesn't double-schedule it
+      followerInput.subjects = followerInput.subjects.filter(
+        s => s.subjectId !== group.subjectId
+      );
+    }
+  }
+
   // --- Co-scheduling Analysis ---
   const variantBaseSubjectIds = new Set(
     subjects.filter(s => s.isLanguageVariant && s.replacesSubjectId).map(s => s.replacesSubjectId!)
@@ -423,6 +492,7 @@ export async function POST(req: NextRequest) {
     days: workingDays,
     slotsPerDay: periodsPerDay,
     morningPeriods,
+    sharedSubjectIds: peGroupSubjectIds.size > 0 ? Array.from(peGroupSubjectIds) : undefined,
   };
 
   // Build human-readable exclusions for AI context

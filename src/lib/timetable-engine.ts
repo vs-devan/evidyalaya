@@ -55,6 +55,7 @@ export interface DivisionSubjectInput {
   // Shared venue/resource: subjects with the same non-null value cannot be
   // scheduled at the same (day, slot) across any division school-wide.
   sharedVenueGroupId: string | null;
+  coScheduledDivisions?: { divisionId: string; teacherId: string }[];
 }
 
 export interface SubjectInput {

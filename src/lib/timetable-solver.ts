@@ -370,7 +370,10 @@ function buildVariables(input: TimetableInput): Variable[] {
 
       const fixedSlot = resolveSlotNumber(ds.fixedSlot, input.slotsPerDay);
       const variantTeacherIds = baseSubjectIds.has(ds.subjectId) ? (div.variantTeacherIds ?? []) : [];
-      const coScheduledDivisions = baseSubjectIds.has(ds.subjectId) ? div.coScheduledDivisions : undefined;
+      const coScheduledDivisions = ds.coScheduledDivisions ||
+        (baseSubjectIds.has(ds.subjectId) && !(input.sharedSubjectIds || []).includes(ds.subjectId)
+          ? div.coScheduledDivisions
+          : undefined);
       const sharedVenueGroupId = ds.sharedVenueGroupId ?? null;
 
       // Create block-sized variables

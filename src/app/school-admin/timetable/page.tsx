@@ -213,6 +213,42 @@ export default function TimetablePage() {
       }
       setVariantTeacherMap(map);
     }
+    
+    // Build default PE groups if not configured
+    if (subRes.success && Array.isArray(subRes.data) && cRes.success && Array.isArray(cRes.data)) {
+      const peSub = subRes.data.find((s: any) => 
+        s.code === 'PE' || s.code === 'PET' || s.name.toLowerCase().includes('physical education')
+      );
+      if (peSub) {
+        const allDivs = cRes.data.flatMap((c: any) => 
+          c.divisions?.map((d: any) => ({ ...d, className: c.name, label: `${c.name}${d.name}` })) || []
+        );
+        
+        const div5A = allDivs.find((d: any) => d.label === '5A');
+        const div5B = allDivs.find((d: any) => d.label === '5B');
+        const div6A = allDivs.find((d: any) => d.label === '6A');
+        const div6B = allDivs.find((d: any) => d.label === '6B');
+        
+        const defaults: PEGroup[] = [];
+        if (div5A && div5B) {
+          defaults.push({
+            id: 'default-5-pe',
+            subjectId: peSub.id,
+            subjectName: `${peSub.name} (${peSub.code})`,
+            divisionIds: [div5A.id, div5B.id],
+          });
+        }
+        if (div6A && div6B) {
+          defaults.push({
+            id: 'default-6-pe',
+            subjectId: peSub.id,
+            subjectName: `${peSub.name} (${peSub.code})`,
+            divisionIds: [div6A.id, div6B.id],
+          });
+        }
+        setPeGroups(defaults);
+      }
+    }
 
     setLoading(false);
   }

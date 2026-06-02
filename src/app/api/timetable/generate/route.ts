@@ -415,9 +415,31 @@ export async function POST(req: NextRequest) {
           }
         }
 
+        // Construct default PE groups if none are provided
+        if (peGroups.length === 0) {
+          const peSub = subjects.find(s =>
+            s.code === 'PE' || s.code === 'PET' || s.name.toLowerCase().includes('physical education')
+          );
+          if (peSub) {
+            const allDivs = classes.flatMap((c: any) =>
+              c.divisions?.map((d: any) => ({ ...d, className: c.name, label: `${c.name}${d.name}` })) || []
+            );
+            const div5A = allDivs.find((d: any) => d.label === '5A');
+            const div5B = allDivs.find((d: any) => d.label === '5B');
+            const div6A = allDivs.find((d: any) => d.label === '6A');
+            const div6B = allDivs.find((d: any) => d.label === '6B');
+            if (div5A && div5B) {
+              peGroups.push({ subjectId: peSub.id, divisionIds: [div5A.id, div5B.id] });
+            }
+            if (div6A && div6B) {
+              peGroups.push({ subjectId: peSub.id, divisionIds: [div6A.id, div6B.id] });
+            }
+          }
+        }
+
         // ─── PE Group Co-scheduling Injection ────────────────────────────────
         // For each configured PE group, remove the shared subject from follower
-        // divisions and wire up coScheduledDivisions on the lead division.
+        // divisions and wire up coScheduledDivisions on the lead division's PE subject.
         const peGroupSubjectIds = new Set<string>();
         for (const group of peGroups) {
           if (!group.subjectId || !Array.isArray(group.divisionIds) || group.divisionIds.length < 2) continue;
@@ -433,8 +455,11 @@ export async function POST(req: NextRequest) {
           const leadInput = divisionInputs.find(di => di.id === leadId);
           if (!leadInput) continue;
 
-          // Initialise coScheduledDivisions on lead if needed
-          if (!leadInput.coScheduledDivisions) leadInput.coScheduledDivisions = [];
+          const leadPeSub = leadInput.subjects.find(s => s.subjectId === group.subjectId);
+          if (!leadPeSub) continue;
+
+          // Initialise coScheduledDivisions on lead's PE subject if needed
+          if (!leadPeSub.coScheduledDivisions) leadPeSub.coScheduledDivisions = [];
 
           for (const followerId of followerIds) {
             const followerInput = divisionInputs.find(di => di.id === followerId);
@@ -444,8 +469,8 @@ export async function POST(req: NextRequest) {
             const followerPeSub = followerInput.subjects.find(s => s.subjectId === group.subjectId);
             if (!followerPeSub) continue;
 
-            // Wire follower into lead's co-scheduled list
-            leadInput.coScheduledDivisions.push({
+            // Wire follower into lead's PE subject co-scheduled list
+            leadPeSub.coScheduledDivisions.push({
               divisionId: followerId,
               teacherId: followerPeSub.teacherId,
             });
