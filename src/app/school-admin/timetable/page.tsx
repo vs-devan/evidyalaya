@@ -6,7 +6,7 @@ import { getDayName } from '@/lib/utils';
 
 // ─── Types ─────────────────────────────────────────────────────────────────
 
-type ViewMode = 'weekly' | 'daily' | 'conditions';
+type ViewMode = 'weekly' | 'daily' | 'conditions' | 'report' | 'teacher';
 
 interface Constraint {
   id: string;
@@ -14,6 +14,13 @@ interface Constraint {
   category: string;
   enabled: boolean;
   source: 'builtin' | 'ai';
+}
+
+interface PEGroup {
+  id: string;         // local uuid
+  subjectId: string;
+  subjectName: string;
+  divisionIds: string[];
 }
 
 interface Issue {
@@ -52,7 +59,6 @@ const BUILTIN_CONSTRAINTS: Constraint[] = [
   { id: 'c_no_span_lunch', label: 'Consecutive-slot subjects must not span across the lunch break', category: 'Consecutive Slots', enabled: true, source: 'builtin' },
   // Language variants
   { id: 'c_lang_variant', label: 'Language variant subjects (Sanskrit, Arabic, Urdu) replace Malayalam I — only one is scheduled per division', category: 'Language Variants', enabled: true, source: 'builtin' },
-  { id: 'c_mal1_san_ara_parallel', label: 'Only Division A has Sanskrit and Arabic students; when Mal I is taught, Sanskrit and Arabic run simultaneously in parallel for Division A students (same slot, same teacher assigns)', category: 'Language Variants', enabled: true, source: 'builtin' },
   // Fixed placement
   { id: 'c_fixed_day', label: 'Fixed-day subjects are pinned to their designated weekday (e.g., Recreation = Friday)', category: 'Special Rules', enabled: true, source: 'builtin' },
   { id: 'c_fixed_slot', label: 'Fixed-slot subjects are pinned to their designated period (FIRST, LAST, or a specific slot number)', category: 'Special Rules', enabled: true, source: 'builtin' },
@@ -118,6 +124,7 @@ export default function TimetablePage() {
   const [viewMode, setViewMode] = useState<ViewMode>('weekly');
   const [selectedDay, setSelectedDay] = useState(new Date().getDay() || 1);
   const [selectedDivision, setSelectedDivision] = useState('');
+  const [checkedDivisions, setCheckedDivisions] = useState<Record<string, boolean>>({});
   const [result, setResult] = useState<any>(null);
   const [genProgress, setGenProgress] = useState<GenProgress | null>(null);
 
@@ -135,6 +142,14 @@ export default function TimetablePage() {
   const [issueFilter, setIssueFilter] = useState<'all' | 'error' | 'warning' | 'info'>('all');
   const [showAnalysis, setShowAnalysis] = useState(false);
 
+  // Report state
+  const [report, setReport] = useState<any | null>(null);
+  const [reportLoading, setReportLoading] = useState(false);
+  const [reportError, setReportError] = useState('');
+  const [reportDivFilter, setReportDivFilter] = useState('');
+  const [reportExpandedDiv, setReportExpandedDiv] = useState<string | null>(null);
+  const [reportTab, setReportTab] = useState<'overview' | 'divisions' | 'subjects' | 'teachers'>('overview');
+
   // Locking states
   const [locked, setLocked] = useState(false);
   const [showPasswordModal, setShowPasswordModal] = useState(false);
@@ -142,27 +157,57 @@ export default function TimetablePage() {
   const [passwordError, setPasswordError] = useState('');
   const [passwordPurpose, setPasswordPurpose] = useState<'unlock_only' | 'unlock_and_generate'>('unlock_only');
 
+  // PE Group state
+  const [peGroups, setPeGroups] = useState<PEGroup[]>([]);
+  const [subjects, setSubjects] = useState<any[]>([]);
+  const [showPeGroupForm, setShowPeGroupForm] = useState(false);
+  const [peFormSubjectId, setPeFormSubjectId] = useState('');
+  const [peFormDivIds, setPeFormDivIds] = useState<Record<string, boolean>>({});
+
+  // Teacher View state
+  const [teachers, setTeachers] = useState<any[]>([]);
+  const [checkedTeachers, setCheckedTeachers] = useState<Record<string, boolean>>({});
+
   useEffect(() => { fetchAll(); }, []);
+
+  // Automatically check all divisions by default once classes load
+  useEffect(() => {
+    if (classes.length > 0) {
+      const initialChecked: Record<string, boolean> = {};
+      classes.forEach((c: any) => {
+        c.divisions?.forEach((d: any) => {
+          initialChecked[d.id] = true;
+        });
+      });
+      setCheckedDivisions(initialChecked);
+    }
+  }, [classes]);
 
   async function fetchAll() {
     setLoading(true);
-    const [tRes, cRes, lRes, tchRes] = await Promise.all([
+    const [tRes, cRes, lRes, tchRes, subRes] = await Promise.all([
       fetch('/api/timetable').then(r => r.json()),
       fetch('/api/classes').then(r => r.json()),
       fetch('/api/timetable/lock').then(r => r.json()).catch(() => ({ success: false, locked: false })),
       fetch('/api/teachers').then(r => r.json()),
+      fetch('/api/subjects').then(r => r.json()).catch(() => ({ success: false, data: [] })),
     ]);
     if (tRes.success) setEntries(tRes.data);
     if (cRes.success) setClasses(cRes.data);
     if (lRes.success) setLocked(lRes.locked);
+    if (subRes.success && Array.isArray(subRes.data)) setSubjects(subRes.data);
 
-    // Build variant teacher map: subjectId → teacherCode
-    // For each teacher that teaches a language variant subject, record their code
+    // Build variant teacher map and teacher list
     if (tchRes.success && Array.isArray(tchRes.data)) {
+      setTeachers(tchRes.data);
+      // Auto-check all teachers
+      const allChecked: Record<string, boolean> = {};
+      tchRes.data.forEach((t: any) => { allChecked[t.id] = true; });
+      setCheckedTeachers(allChecked);
+
       const map: Record<string, string> = {};
       for (const t of tchRes.data) {
         for (const sm of (t.subjectMappings || [])) {
-          // We'll use first teacher found per subject as the representative
           if (!map[sm.subjectId]) map[sm.subjectId] = t.teacherCode;
         }
       }
@@ -199,7 +244,11 @@ export default function TimetablePage() {
       const res = await fetch('/api/timetable/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ constraints: activeConstraints, password }),
+        body: JSON.stringify({
+          constraints: activeConstraints,
+          password,
+          peGroups: peGroups.map(g => ({ subjectId: g.subjectId, divisionIds: g.divisionIds })),
+        }),
       });
 
       if (!res.body) throw new Error('No response body');
@@ -353,7 +402,8 @@ export default function TimetablePage() {
   const slots = [1, 2, 3, 4, 5, 6, 7];
 
   function getEntry(divId: string, day: number, slot: number) {
-    return entries.find((e: any) => e.divisionId === divId && e.dayOfWeek === day && e.slotNumber === slot);
+    return entries.find((e: any) => e.divisionId === divId && e.dayOfWeek === day && e.slotNumber === slot && !e.subject?.isLanguageVariant)
+      || entries.find((e: any) => e.divisionId === divId && e.dayOfWeek === day && e.slotNumber === slot);
   }
 
   // Group constraints by category
@@ -708,6 +758,33 @@ export default function TimetablePage() {
               {constraints.filter(c => c.enabled).length}/{constraints.length}
             </span>
           </button>
+          <button
+            className={`tab ${viewMode === 'report' ? 'active' : ''}`}
+            onClick={async () => {
+              setViewMode('report');
+              if (!report && !reportLoading) {
+                setReportLoading(true);
+                setReportError('');
+                try {
+                  const res = await fetch('/api/timetable/report');
+                  const data = await res.json();
+                  if (data.success) setReport(data.data);
+                  else setReportError(data.error || 'Failed to load report');
+                } catch { setReportError('Network error'); }
+                setReportLoading(false);
+              }
+            }}
+            id="tab-report"
+          >
+            📊 Report
+          </button>
+          <button
+            className={`tab ${viewMode === 'teacher' ? 'active' : ''}`}
+            onClick={() => setViewMode('teacher')}
+            id="tab-teacher-view"
+          >
+            👩‍🏫 Teacher View
+          </button>
         </div>
 
         {/* ── WEEKLY VIEW ─────────────────────────────────────────────── */}
@@ -728,14 +805,96 @@ export default function TimetablePage() {
               </select>
             </div>
 
+            {/* Checkbox Selector for Selective Division Printing */}
+            {selectedDivision === '' && allDivisions.length > 0 && (
+              <div className="no-print" style={{ 
+                marginBottom: 20, 
+                background: 'var(--bg-card, #ffffff)', 
+                padding: '16px', 
+                borderRadius: 'var(--radius-lg, 12px)', 
+                border: '1px solid var(--border-color, #e2e8f0)',
+                boxShadow: 'var(--shadow-sm, 0 1px 2px 0 rgba(0, 0, 0, 0.05))'
+              }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                  <span style={{ fontWeight: 600, fontSize: '13.5px', color: 'var(--text-primary)' }}>
+                    🖨️ Select Divisions to Print / View:
+                  </span>
+                  <div style={{ display: 'flex', gap: 10 }}>
+                    <button 
+                      type="button" 
+                      className="btn btn-ghost btn-sm" 
+                      style={{ fontSize: '11px', padding: '2px 8px' }}
+                      onClick={() => {
+                        const allChecked: Record<string, boolean> = {};
+                        allDivisions.forEach((d: any) => { allChecked[d.id] = true; });
+                        setCheckedDivisions(allChecked);
+                      }}
+                    >
+                      Select All
+                    </button>
+                    <button 
+                      type="button" 
+                      className="btn btn-ghost btn-sm" 
+                      style={{ fontSize: '11px', padding: '2px 8px' }}
+                      onClick={() => {
+                        setCheckedDivisions({});
+                      }}
+                    >
+                      Clear All
+                    </button>
+                  </div>
+                </div>
+                <div style={{ display: 'flex', gap: '8px 16px', flexWrap: 'wrap' }}>
+                  {allDivisions.map((d: any) => {
+                    const isChecked = checkedDivisions[d.id] !== false;
+                    return (
+                      <label 
+                        key={d.id} 
+                        style={{ 
+                          display: 'inline-flex', 
+                          alignItems: 'center', 
+                          gap: 8, 
+                          fontSize: '13px', 
+                          fontWeight: 500,
+                          cursor: 'pointer', 
+                          userSelect: 'none',
+                          padding: '6px 12px',
+                          borderRadius: '6px',
+                          background: isChecked ? 'var(--primary-50, #f0fdf4)' : 'var(--gray-50, #f8fafc)',
+                          border: `1px solid ${isChecked ? 'var(--primary-200, #bbf7d0)' : 'var(--border-color, #e2e8f0)'}`,
+                          color: isChecked ? 'var(--primary-700, #15803d)' : 'var(--gray-600, #475569)',
+                          transition: 'all 0.15s ease'
+                        }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={isChecked}
+                          style={{ cursor: 'pointer', accentColor: 'var(--primary-color)' }}
+                          onChange={(e) => {
+                            setCheckedDivisions(prev => ({
+                              ...prev,
+                              [d.id]: e.target.checked
+                            }));
+                          }}
+                        />
+                        Class {d.label}
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
             {entries.length === 0 ? (
               <EmptyState />
             ) : (
               (selectedDivision
                 ? [allDivisions.find((d: any) => d.id === selectedDivision)]
                 : allDivisions
-              ).filter(Boolean).map((div: any) => (
-                <div key={div.id} className="card" style={{ marginBottom: 16 }}>
+              ).filter(Boolean)
+               .filter((div: any) => selectedDivision !== '' || checkedDivisions[div.id] !== false)
+               .map((div: any) => (
+                <div key={div.id} className="card tt-print-card" style={{ marginBottom: 16 }}>
                   <div className="card-header">
                     <h3>Class {div.label}</h3>
                     <span className="badge badge-green">{div.className}</span>
@@ -747,7 +906,7 @@ export default function TimetablePage() {
                       days={days}
                       slots={slots}
                       getEntry={getEntry}
-                      variantTeacherMap={variantTeacherMap}
+                      entries={entries}
                     />
                   </div>
                 </div>
@@ -772,6 +931,86 @@ export default function TimetablePage() {
               ))}
             </div>
 
+            {/* Checkbox Selector for Selective Division Printing */}
+            {allDivisions.length > 0 && (
+              <div className="no-print" style={{ 
+                marginBottom: 20, 
+                background: 'var(--bg-card, #ffffff)', 
+                padding: '16px', 
+                borderRadius: 'var(--radius-lg, 12px)', 
+                border: '1px solid var(--border-color, #e2e8f0)',
+                boxShadow: 'var(--shadow-sm, 0 1px 2px 0 rgba(0, 0, 0, 0.05))'
+              }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                  <span style={{ fontWeight: 600, fontSize: '13.5px', color: 'var(--text-primary)' }}>
+                    🖨️ Select Divisions to Print / View:
+                  </span>
+                  <div style={{ display: 'flex', gap: 10, marginLeft: 'auto' }}>
+                    <button 
+                      type="button" 
+                      className="btn btn-ghost btn-sm" 
+                      style={{ fontSize: '11px', padding: '2px 8px' }}
+                      onClick={() => {
+                        const allChecked: Record<string, boolean> = {};
+                        allDivisions.forEach((d: any) => { allChecked[d.id] = true; });
+                        setCheckedDivisions(allChecked);
+                      }}
+                    >
+                      Select All
+                    </button>
+                    <button 
+                      type="button" 
+                      className="btn btn-ghost btn-sm" 
+                      style={{ fontSize: '11px', padding: '2px 8px' }}
+                      onClick={() => {
+                        setCheckedDivisions({});
+                      }}
+                    >
+                      Clear All
+                    </button>
+                  </div>
+                </div>
+                <div style={{ display: 'flex', gap: '8px 16px', flexWrap: 'wrap' }}>
+                  {allDivisions.map((d: any) => {
+                    const isChecked = checkedDivisions[d.id] !== false;
+                    return (
+                      <label 
+                        key={d.id} 
+                        style={{ 
+                          display: 'inline-flex', 
+                          alignItems: 'center', 
+                          gap: 8, 
+                          fontSize: '13px', 
+                          fontWeight: 500,
+                          cursor: 'pointer', 
+                          userSelect: 'none',
+                          padding: '6px 12px',
+                          borderRadius: '6px',
+                          background: isChecked ? 'var(--primary-50, #f0fdf4)' : 'var(--gray-50, #f8fafc)',
+                          border: `1px solid ${isChecked ? 'var(--primary-200, #bbf7d0)' : 'var(--border-color, #e2e8f0)'}`,
+                          color: isChecked ? 'var(--primary-700, #15803d)' : 'var(--gray-600, #475569)',
+                          transition: 'all 0.15s ease'
+                        }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={isChecked}
+                          style={{ cursor: 'pointer', accentColor: 'var(--primary-color)' }}
+                          onChange={(e) => {
+                            setCheckedDivisions(prev => ({
+                              ...prev,
+                              [d.id]: e.target.checked
+                            }));
+                          }}
+                        />
+                        Class {d.label}
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
             {entries.length === 0 ? (
               <EmptyState />
             ) : (
@@ -782,11 +1021,11 @@ export default function TimetablePage() {
                 <div style={{ overflowX: 'auto' }}>
                   {/* Daily view also inverted: Divisions as rows, Periods as columns */}
                   <DailyInvertedGrid
-                    divisions={allDivisions}
+                    divisions={allDivisions.filter((div: any) => checkedDivisions[div.id] !== false)}
                     slots={slots}
                     selectedDay={selectedDay}
                     getEntry={getEntry}
-                    variantTeacherMap={variantTeacherMap}
+                    entries={entries}
                   />
                 </div>
               </div>
@@ -886,6 +1125,154 @@ export default function TimetablePage() {
               ))}
             </div>
 
+            {/* PE Class Groups Card */}
+            <div className="card" style={{ marginTop: 0 }}>
+              <div className="card-header" style={{ background: 'linear-gradient(135deg,#0f766e,#0d9488)' }}>
+                <h3 style={{ color: '#fff', display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span>🏃</span> PE Class Groups
+                </h3>
+                <span style={{ fontSize: 12, color: 'rgba(255,255,255,.75)' }}>Schedule PE at the same time for small classes</span>
+              </div>
+              <div className="card-body">
+                <p style={{ fontSize: 13, color: 'var(--gray-600)', marginBottom: 14 }}>
+                  Group divisions so their Physical Education (or any shared activity) period is scheduled simultaneously. Ideal for small classes like 5th and 6th.
+                </p>
+
+                {/* Existing groups */}
+                {peGroups.length > 0 && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 14 }}>
+                    {peGroups.map(group => (
+                      <div key={group.id} style={{
+                        display: 'flex', alignItems: 'center', gap: 10,
+                        padding: '10px 14px', borderRadius: 10,
+                        background: 'rgba(15,118,110,.06)', border: '1px solid rgba(15,118,110,.2)',
+                      }}>
+                        <span style={{ fontSize: 18 }}>🏃</span>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontWeight: 700, fontSize: 13, color: 'var(--text-primary)' }}>{group.subjectName}</div>
+                          <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 4 }}>
+                            {group.divisionIds.map(divId => {
+                              const div = allDivisions.find((d: any) => d.id === divId);
+                              return div ? (
+                                <span key={divId} style={{
+                                  fontSize: 11, fontWeight: 600, padding: '2px 8px',
+                                  background: 'rgba(15,118,110,.1)', color: '#0f766e',
+                                  borderRadius: 999, border: '1px solid rgba(15,118,110,.2)',
+                                }}>
+                                  Class {div.label}
+                                </span>
+                              ) : null;
+                            })}
+                          </div>
+                        </div>
+                        <button
+                          className="tt-remove-btn"
+                          style={{ fontSize: 16, padding: '2px 6px', color: 'var(--gray-400)' }}
+                          onClick={() => setPeGroups(prev => prev.filter(g => g.id !== group.id))}
+                          title="Remove this group"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Add group form */}
+                {showPeGroupForm ? (
+                  <div style={{
+                    padding: 14, borderRadius: 12, border: '1px solid var(--border-color)',
+                    background: 'var(--surface-bg, #f8f9fc)',
+                  }}>
+                    <div className="form-group" style={{ marginBottom: 12 }}>
+                      <label className="form-label">Subject (PE / Activity)</label>
+                      <select
+                        className="form-select"
+                        value={peFormSubjectId}
+                        onChange={e => setPeFormSubjectId(e.target.value)}
+                        id="pe-group-subject-select"
+                      >
+                        <option value="">— Select subject —</option>
+                        {subjects.filter((s: any) => !s.isLanguageVariant).map((s: any) => (
+                          <option key={s.id} value={s.id}>{s.name} ({s.code})</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="form-group" style={{ marginBottom: 12 }}>
+                      <label className="form-label">Select Divisions to Group</label>
+                      <div style={{ display: 'flex', gap: '6px 12px', flexWrap: 'wrap', marginTop: 6 }}>
+                        {allDivisions.map((div: any) => {
+                          const checked = !!peFormDivIds[div.id];
+                          return (
+                            <label
+                              key={div.id}
+                              style={{
+                                display: 'inline-flex', alignItems: 'center', gap: 6,
+                                fontSize: 13, fontWeight: 500, cursor: 'pointer',
+                                padding: '5px 10px', borderRadius: 6,
+                                background: checked ? 'rgba(15,118,110,.1)' : 'var(--gray-50, #f8fafc)',
+                                border: `1px solid ${checked ? 'rgba(15,118,110,.3)' : 'var(--border-color)'}`,
+                                color: checked ? '#0f766e' : 'var(--gray-600)',
+                                transition: 'all .15s ease',
+                              }}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                style={{ accentColor: '#0f766e' }}
+                                onChange={e => setPeFormDivIds(prev => ({ ...prev, [div.id]: e.target.checked }))}
+                              />
+                              Class {div.label}
+                            </label>
+                          );
+                        })}
+                      </div>
+                    </div>
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      <button
+                        className="btn btn-primary"
+                        style={{ background: '#0f766e', borderColor: '#0f766e', fontSize: 13 }}
+                        disabled={!peFormSubjectId || Object.values(peFormDivIds).filter(Boolean).length < 2}
+                        onClick={() => {
+                          const sub = subjects.find((s: any) => s.id === peFormSubjectId);
+                          if (!sub) return;
+                          const divIds = Object.entries(peFormDivIds).filter(([, v]) => v).map(([k]) => k);
+                          if (divIds.length < 2) return;
+                          setPeGroups(prev => [...prev, {
+                            id: Math.random().toString(36).slice(2),
+                            subjectId: peFormSubjectId,
+                            subjectName: `${sub.name} (${sub.code})`,
+                            divisionIds: divIds,
+                          }]);
+                          setShowPeGroupForm(false);
+                          setPeFormSubjectId('');
+                          setPeFormDivIds({});
+                        }}
+                      >
+                        ✓ Add Group
+                      </button>
+                      <button
+                        className="btn btn-secondary"
+                        style={{ fontSize: 13 }}
+                        onClick={() => { setShowPeGroupForm(false); setPeFormSubjectId(''); setPeFormDivIds({}); }}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <button
+                    className="btn btn-secondary"
+                    style={{ fontSize: 13 }}
+                    onClick={() => setShowPeGroupForm(true)}
+                    id="btn-add-pe-group"
+                  >
+                    + Add PE Group
+                  </button>
+                )}
+              </div>
+            </div>
+
             {/* Summary footer */}
             <div className="tt-conditions-footer">
               <div className="tt-conditions-summary">
@@ -894,11 +1281,609 @@ export default function TimetablePage() {
                 <span>🔒 <strong>{constraints.filter(c => !c.enabled).length}</strong> disabled</span>
                 <span>·</span>
                 <span>✨ <strong>{constraints.filter(c => c.source === 'ai').length}</strong> AI-generated</span>
+                {peGroups.length > 0 && (
+                  <><span>·</span><span>🏃 <strong>{peGroups.length}</strong> PE group{peGroups.length !== 1 ? 's' : ''}</span></>
+                )}
               </div>
               <p style={{ fontSize: 12, color: 'var(--gray-400)', marginTop: 6 }}>
                 These constraints are informational guides for the generation algorithm. The engine always respects hard rules (no double-booking, no spanning lunch).
               </p>
             </div>
+          </div>
+        )}
+
+
+        {/* ── TEACHER VIEW TAB ─────────────────────────────────────────── */}
+        {viewMode === 'teacher' && (
+          <>
+            {/* Checkbox Selector */}
+            <div className="no-print" style={{
+              marginBottom: 20,
+              background: 'var(--bg-card, #ffffff)',
+              padding: '16px',
+              borderRadius: 'var(--radius-lg, 12px)',
+              border: '1px solid var(--border-color, #e2e8f0)',
+              boxShadow: 'var(--shadow-sm)',
+            }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                <span style={{ fontWeight: 600, fontSize: '13.5px', color: 'var(--text-primary)' }}>
+                  👩‍🏫 Select Teachers to View / Print:
+                </span>
+                <div style={{ display: 'flex', gap: 10 }}>
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-sm"
+                    style={{ fontSize: '11px', padding: '2px 8px' }}
+                    onClick={() => {
+                      const all: Record<string, boolean> = {};
+                      teachers.forEach((t: any) => { all[t.id] = true; });
+                      setCheckedTeachers(all);
+                    }}
+                  >
+                    Select All
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-sm"
+                    style={{ fontSize: '11px', padding: '2px 8px' }}
+                    onClick={() => setCheckedTeachers({})}
+                  >
+                    Clear All
+                  </button>
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: '8px 12px', flexWrap: 'wrap' }}>
+                {teachers.map((t: any) => {
+                  const isChecked = checkedTeachers[t.id] !== false && checkedTeachers[t.id] !== undefined
+                    ? !!checkedTeachers[t.id] : false;
+                  const hasSlots = entries.some((e: any) => e.teacherId === t.id);
+                  return (
+                    <label
+                      key={t.id}
+                      style={{
+                        display: 'inline-flex', alignItems: 'center', gap: 7,
+                        fontSize: '13px', fontWeight: 500,
+                        cursor: 'pointer', userSelect: 'none',
+                        padding: '5px 11px', borderRadius: '6px',
+                        background: isChecked ? 'var(--primary-50, #eff6ff)' : 'var(--gray-50, #f8fafc)',
+                        border: `1px solid ${isChecked ? 'var(--primary-200, #bfdbfe)' : 'var(--border-color)'}`,
+                        color: isChecked ? 'var(--primary-700, #1d4ed8)' : hasSlots ? 'var(--gray-700)' : 'var(--gray-400)',
+                        transition: 'all 0.15s ease',
+                        opacity: hasSlots ? 1 : 0.6,
+                      }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={isChecked}
+                        style={{ cursor: 'pointer', accentColor: 'var(--primary-color)' }}
+                        onChange={e => setCheckedTeachers(prev => ({ ...prev, [t.id]: e.target.checked }))}
+                      />
+                      <span>{t.user?.name || t.teacherCode}</span>
+                      <span style={{
+                        fontSize: 10, fontWeight: 700,
+                        background: isChecked ? 'var(--primary-100)' : 'var(--gray-100)',
+                        color: isChecked ? 'var(--primary-600)' : 'var(--gray-500)',
+                        padding: '0px 5px', borderRadius: 999,
+                      }}>
+                        {t.teacherCode}
+                      </span>
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Teacher timetable cards */}
+            {entries.length === 0 ? (
+              <EmptyState />
+            ) : (
+              teachers
+                .filter((t: any) => checkedTeachers[t.id])
+                .map((teacher: any) => {
+                  const teacherEntries = entries.filter((e: any) => e.teacherId === teacher.id);
+                  return (
+                    <div key={teacher.id} className="card tt-print-card" style={{ marginBottom: 16 }}>
+                      <div className="card-header">
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                          <div style={{
+                            width: 38, height: 38, borderRadius: '50%',
+                            background: 'linear-gradient(135deg, var(--primary-600), var(--primary-500))',
+                            display: 'flex', alignItems: 'center', justifyContent: 'center',
+                            color: '#fff', fontWeight: 800, fontSize: 15, flexShrink: 0,
+                          }}>
+                            {(teacher.user?.name || teacher.teacherCode).charAt(0).toUpperCase()}
+                          </div>
+                          <div>
+                            <h3 style={{ margin: 0 }}>{teacher.user?.name || teacher.teacherCode}</h3>
+                            <span style={{ fontSize: 12, color: 'var(--gray-500)' }}>
+                              Code: <strong>{teacher.teacherCode}</strong>
+                              {teacher.designation && ` · ${teacher.designation}`}
+                              {' · '}
+                              <span style={{ color: teacherEntries.length > 0 ? '#16a34a' : 'var(--gray-400)' }}>
+                                {teacherEntries.length} period{teacherEntries.length !== 1 ? 's' : ''}/week
+                              </span>
+                            </span>
+                          </div>
+                        </div>
+                        <span className={`badge ${teacherEntries.length > 0 ? 'badge-green' : 'badge-gray'}`}>
+                          {teacherEntries.length > 0 ? 'Active' : 'No periods'}
+                        </span>
+                      </div>
+                      <div className="card-body" style={{ padding: 0, overflowX: 'auto' }}>
+                        {teacherEntries.length === 0 ? (
+                          <div style={{ padding: '24px', textAlign: 'center', color: 'var(--gray-400)', fontSize: 13 }}>
+                            😴 No periods scheduled for this teacher
+                          </div>
+                        ) : (
+                          <TeacherTimetableGrid
+                            teacher={teacher}
+                            entries={teacherEntries}
+                            allDivisions={allDivisions}
+                            days={days}
+                            slots={slots}
+                          />
+                        )}
+                      </div>
+                    </div>
+                  );
+                })
+            )}
+            {teachers.filter((t: any) => checkedTeachers[t.id]).length === 0 && entries.length > 0 && (
+              <div className="card">
+                <div className="empty-state">
+                  <div className="empty-state-icon">👩‍🏫</div>
+                  <h3>No Teachers Selected</h3>
+                  <p>Use the checkboxes above to select teachers to view their timetables.</p>
+                </div>
+              </div>
+            )}
+          </>
+        )}
+
+        {/* ── REPORT TAB ──────────────────────────────────────────────── */}
+        {viewMode === 'report' && (
+          <div className="tt-report-tab">
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+              <div>
+                <h3 style={{ margin: 0, fontSize: 17, fontWeight: 700 }}>🗂️ Generation Input Report</h3>
+                <p style={{ margin: '4px 0 0', fontSize: 13, color: 'var(--gray-500)' }}>
+                  All data feeding into the timetable generator — use this to diagnose unfilled slots.
+                </p>
+              </div>
+              <button
+                className="btn btn-secondary"
+                style={{ fontSize: 12 }}
+                onClick={async () => {
+                  setReport(null);
+                  setReportLoading(true);
+                  setReportError('');
+                  try {
+                    const res = await fetch('/api/timetable/report');
+                    const data = await res.json();
+                    if (data.success) setReport(data.data);
+                    else setReportError(data.error || 'Failed to load report');
+                  } catch { setReportError('Network error'); }
+                  setReportLoading(false);
+                }}
+                id="btn-refresh-report"
+              >
+                🔄 Refresh
+              </button>
+            </div>
+
+            {reportLoading && (
+              <div style={{ padding: 40, textAlign: 'center', color: 'var(--gray-500)' }}>
+                <div className="spinner" style={{ margin: '0 auto 12px' }} />
+                Loading report data…
+              </div>
+            )}
+            {reportError && (
+              <div style={{ padding: 16, background: '#fef2f2', border: '1px solid #fca5a5', borderRadius: 10, color: '#dc2626', fontSize: 13 }}>
+                ❌ {reportError}
+              </div>
+            )}
+
+            {report && (
+              <>
+                {/* School Config Banner */}
+                <div className="tt-report-config-banner">
+                  {[
+                    { icon: '📅', label: 'Working Days', value: report.schoolConfig.workingDays },
+                    { icon: '🕐', label: 'Periods / Day', value: report.schoolConfig.periodsPerDay },
+                    { icon: '🌅', label: 'Morning Periods', value: report.schoolConfig.morningPeriods },
+                    { icon: '🌇', label: 'Afternoon Periods', value: report.schoolConfig.afternoonPeriods },
+                    { icon: '📦', label: 'Slots / Division', value: report.schoolConfig.totalCapacityPerDivision },
+                    { icon: '🏫', label: 'Total Divisions', value: report.summary.divisionCount },
+                    { icon: '📚', label: 'Schedulable Subjects', value: report.summary.schedulableSubjectCount },
+                    { icon: '👩‍🏫', label: 'Teachers', value: report.summary.teacherCount },
+                  ].map(item => (
+                    <div key={item.label} className="tt-report-config-tile">
+                      <span className="tt-config-icon">{item.icon}</span>
+                      <span className="tt-config-value">{item.value}</span>
+                      <span className="tt-config-label">{item.label}</span>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Alert chips */}
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 16 }}>
+                  {report.summary.subjectsWithNoTeacher > 0 && (
+                    <span className="tt-report-chip error">🔴 {report.summary.subjectsWithNoTeacher} subject(s) with no teacher</span>
+                  )}
+                  {report.summary.overloadedDivisions > 0 && (
+                    <span className="tt-report-chip error">🔴 {report.summary.overloadedDivisions} over-capacity division(s)</span>
+                  )}
+                  {report.summary.overloadedTeachers > 0 && (
+                    <span className="tt-report-chip warning">🟠 {report.summary.overloadedTeachers} overloaded teacher(s)</span>
+                  )}
+                  {report.summary.idleTeachers > 0 && (
+                    <span className="tt-report-chip info">🔵 {report.summary.idleTeachers} idle teacher(s)</span>
+                  )}
+                  {report.summary.overloadedDivisions === 0 && report.summary.subjectsWithNoTeacher === 0 && (
+                    <span className="tt-report-chip success">✅ No critical issues detected</span>
+                  )}
+                  <span className="tt-report-chip neutral">
+                    📊 Expected {report.summary.totalExpectedSlots} / {report.summary.totalCapacityAllDivisions} total slots ({report.summary.overallFillRate}% fill)
+                  </span>
+                </div>
+
+                {/* Inner Sub-tabs */}
+                <div style={{ display: 'flex', gap: 8, marginBottom: 16, borderBottom: '2px solid var(--border-color)', paddingBottom: 8 }}>
+                  {(['overview', 'divisions', 'subjects', 'teachers'] as const).map(t => (
+                    <button
+                      key={t}
+                      className={`tt-report-subtab ${reportTab === t ? 'active' : ''}`}
+                      onClick={() => setReportTab(t)}
+                      id={`report-subtab-${t}`}
+                    >
+                      {t === 'overview' ? '📋 Overview' : t === 'divisions' ? '🏫 Divisions' : t === 'subjects' ? '📚 Subjects' : '👩‍🏫 Teachers'}
+                    </button>
+                  ))}
+                </div>
+
+                {/* OVERVIEW SUB-TAB */}
+                {reportTab === 'overview' && (
+                  <div className="tt-report-overview">
+                    <div className="card" style={{ marginBottom: 16 }}>
+                      <div className="card-header"><h3>📋 Division Demand vs Capacity</h3></div>
+                      <div style={{ overflowX: 'auto' }}>
+                        <table className="tt-report-table">
+                          <thead>
+                            <tr>
+                              <th>Division</th>
+                              <th>Subjects</th>
+                              <th>Demand (periods)</th>
+                              <th>Capacity</th>
+                              <th>Fill %</th>
+                              <th>Flags</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {report.divisions.map((d: any) => {
+                              const pct = d.fillRate;
+                              const color = pct > 100 ? '#dc2626' : pct >= 90 ? '#16a34a' : pct >= 70 ? '#d97706' : '#6b7280';
+                              return (
+                                <tr key={d.divisionId}>
+                                  <td><strong>{d.divisionLabel}</strong></td>
+                                  <td>{d.subjectCount}</td>
+                                  <td style={{ fontWeight: 700, color: d.totalDemand > d.totalCapacity ? '#dc2626' : 'inherit' }}>
+                                    {d.totalDemand}
+                                  </td>
+                                  <td>{d.totalCapacity}</td>
+                                  <td>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                      <div style={{ width: 60, height: 6, background: 'var(--border-color)', borderRadius: 99, overflow: 'hidden' }}>
+                                        <div style={{ width: `${Math.min(pct, 100)}%`, height: '100%', background: color, borderRadius: 99 }} />
+                                      </div>
+                                      <span style={{ fontSize: 12, fontWeight: 700, color }}>{pct}%</span>
+                                    </div>
+                                  </td>
+                                  <td>
+                                    {d.flags.map((f: any, i: number) => (
+                                      <span key={i} className={`tt-report-chip ${f.type}`} style={{ display: 'block', marginBottom: 2, fontSize: 11 }}>
+                                        {f.type === 'error' ? '🔴' : f.type === 'warning' ? '🟠' : 'ℹ️'} {f.message}
+                                      </span>
+                                    ))}
+                                    {d.flags.length === 0 && <span style={{ color: '#16a34a', fontSize: 12 }}>✅ OK</span>}
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* DIVISIONS SUB-TAB */}
+                {reportTab === 'divisions' && (
+                  <div>
+                    <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+                      <select
+                        className="form-select"
+                        style={{ width: 200, fontSize: 13 }}
+                        value={reportDivFilter}
+                        onChange={e => setReportDivFilter(e.target.value)}
+                        id="report-division-filter"
+                      >
+                        <option value="">All Divisions</option>
+                        {report.divisions.map((d: any) => (
+                          <option key={d.divisionId} value={d.divisionId}>{d.divisionLabel}</option>
+                        ))}
+                      </select>
+                      <span style={{ fontSize: 12, color: 'var(--gray-500)' }}>Click a division to expand subject detail</span>
+                    </div>
+
+                    {report.divisions
+                      .filter((d: any) => !reportDivFilter || d.divisionId === reportDivFilter)
+                      .map((d: any) => (
+                        <div key={d.divisionId} className="card" style={{ marginBottom: 12 }}>
+                          {/* Division Header */}
+                          <div
+                            className="card-header"
+                            style={{ cursor: 'pointer', userSelect: 'none' }}
+                            onClick={() => setReportExpandedDiv(reportExpandedDiv === d.divisionId ? null : d.divisionId)}
+                          >
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                              <span style={{ fontSize: 18 }}>{reportExpandedDiv === d.divisionId ? '▾' : '▸'}</span>
+                              <div>
+                                <h3 style={{ margin: 0 }}>Class {d.divisionLabel}</h3>
+                                <span style={{ fontSize: 12, color: 'var(--gray-500)' }}>
+                                  CT: {d.classTeacher ? `${d.classTeacher.name} (${d.classTeacher.code})` : '—'}
+                                </span>
+                              </div>
+                              <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center' }}>
+                                <span className={`badge ${d.totalDemand > d.totalCapacity ? 'badge-red' : d.fillRate >= 90 ? 'badge-green' : 'badge-gold'}`}>
+                                  {d.totalDemand}/{d.totalCapacity} periods ({d.fillRate}%)
+                                </span>
+                                {d.flags.filter((f: any) => f.type === 'error').length > 0 && (
+                                  <span className="badge badge-red">🔴 {d.flags.filter((f: any) => f.type === 'error').length} error(s)</span>
+                                )}
+                                {d.flags.filter((f: any) => f.type === 'warning').length > 0 && (
+                                  <span className="badge badge-yellow">🟠 {d.flags.filter((f: any) => f.type === 'warning').length} warning(s)</span>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+
+                          {reportExpandedDiv === d.divisionId && (
+                            <div className="card-body" style={{ padding: 0 }}>
+                              {/* Flags */}
+                              {d.flags.length > 0 && (
+                                <div style={{ padding: '10px 16px', borderBottom: '1px solid var(--border-color)', display: 'flex', flexDirection: 'column', gap: 4 }}>
+                                  {d.flags.map((f: any, i: number) => (
+                                    <div key={i} style={{
+                                      padding: '6px 10px', borderRadius: 6, fontSize: 12,
+                                      background: f.type === 'error' ? '#fef2f2' : f.type === 'warning' ? '#fffbeb' : '#f0f9ff',
+                                      borderLeft: `3px solid ${f.type === 'error' ? '#dc2626' : f.type === 'warning' ? '#d97706' : '#0ea5e9'}`,
+                                    }}>
+                                      {f.type === 'error' ? '🔴' : f.type === 'warning' ? '🟠' : 'ℹ️'} {f.message}
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                              {/* Subject table */}
+                              <div style={{ overflowX: 'auto' }}>
+                                <table className="tt-report-table">
+                                  <thead>
+                                    <tr>
+                                      <th>Subject</th>
+                                      <th>Code</th>
+                                      <th>Periods/Week</th>
+                                      <th>Consecutive</th>
+                                      <th>Core</th>
+                                      <th>Evening</th>
+                                      <th>Fixed Day</th>
+                                      <th>Fixed Slot</th>
+                                      <th>Overridden</th>
+                                      <th>Assigned Teacher</th>
+                                      <th>Resolved Via</th>
+                                      <th>Status</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {d.subjects.map((s: any) => (
+                                      <tr key={s.subjectId} style={{ opacity: s.skippedFromEngine ? 0.5 : 1 }}>
+                                        <td><strong>{s.subjectName}</strong></td>
+                                        <td><span className="badge badge-gray">{s.subjectCode}</span></td>
+                                        <td>
+                                          <span style={{ fontWeight: 700 }}>{s.periodsPerWeek}</span>
+                                          {s.isOverridden && (
+                                            <span style={{ fontSize: 10, color: '#7c3aed', marginLeft: 4 }}>
+                                              (was {s.originalPeriodsPerWeek})
+                                            </span>
+                                          )}
+                                        </td>
+                                        <td style={{ textAlign: 'center' }}>{s.consecutiveSlots > 1 ? `${s.consecutiveSlots}×` : '—'}</td>
+                                        <td style={{ textAlign: 'center' }}>{s.isCore ? '✅' : '—'}</td>
+                                        <td style={{ textAlign: 'center' }}>{s.eveningPriority ? '🌇' : '—'}</td>
+                                        <td style={{ textAlign: 'center' }}>{s.fixedDay != null ? `Day ${s.fixedDay}` : '—'}</td>
+                                        <td style={{ textAlign: 'center' }}>{s.fixedSlot != null ? `Slot ${s.fixedSlot}` : '—'}</td>
+                                        <td style={{ textAlign: 'center' }}>{s.isOverridden ? <span className="badge" style={{ background: '#f3e8ff', color: '#7c3aed' }}>Yes</span> : '—'}</td>
+                                        <td>{s.teacher ? `${s.teacher.name} (${s.teacher.code})` : <span style={{ color: '#dc2626' }}>⚠️ None</span>}</td>
+                                        <td style={{ fontSize: 11, color: 'var(--gray-500)' }}>
+                                          {s.teacher ? {
+                                            class_teacher_flag: 'CT flag',
+                                            class_teacher: 'CT (maps subject)',
+                                            subject_mapping: 'Subject map',
+                                            fallback_restriction_relaxed: '⚠️ Restriction relaxed',
+                                          }[s.teacher.resolvedVia as string] ?? s.teacher.resolvedVia : '—'}
+                                        </td>
+                                        <td>
+                                          {s.skippedFromEngine
+                                            ? <span className="badge badge-red">Skipped: {s.skipReason}</span>
+                                            : <span className="badge badge-green">Scheduled</span>}
+                                        </td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                              {/* Excluded subjects */}
+                              {d.excludedSubjects.length > 0 && (
+                                <div style={{ padding: '10px 16px', borderTop: '1px solid var(--border-color)', fontSize: 12, color: 'var(--gray-500)' }}>
+                                  <strong>Excluded subjects:</strong>{' '}
+                                  {d.excludedSubjects.map((s: any) => (
+                                    <span key={s.subjectId} style={{ marginRight: 8, background: '#f3f4f6', padding: '2px 6px', borderRadius: 4 }}>
+                                      {s.subjectName} ({s.subjectCode})
+                                    </span>
+                                  ))}
+                                </div>
+                              )}
+                              {/* Teacher load within division */}
+                              {d.teacherDemand.length > 0 && (
+                                <div style={{ padding: '10px 16px', borderTop: '1px solid var(--border-color)' }}>
+                                  <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--gray-600)', marginBottom: 6 }}>Teacher load in this division:</div>
+                                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                                    {d.teacherDemand.map((t: any) => (
+                                      <span key={t.id} style={{
+                                        fontSize: 12, padding: '4px 10px', borderRadius: 99,
+                                        background: 'var(--surface-bg, #f3f4f6)', border: '1px solid var(--border-color)',
+                                      }}>
+                                        <strong>{t.code}</strong> — {t.periods} period(s)
+                                      </span>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      ))
+                    }
+                  </div>
+                )}
+
+                {/* SUBJECTS SUB-TAB */}
+                {reportTab === 'subjects' && (
+                  <div className="card">
+                    <div className="card-header"><h3>📚 All Schedulable Subjects</h3></div>
+                    <div style={{ overflowX: 'auto' }}>
+                      <table className="tt-report-table">
+                        <thead>
+                          <tr>
+                            <th>Name</th>
+                            <th>Code</th>
+                            <th>Periods/Week</th>
+                            <th>Consecutive</th>
+                            <th>Core</th>
+                            <th>Evening Priority</th>
+                            <th>Use CT</th>
+                            <th>Fixed Day</th>
+                            <th>Fixed Slot</th>
+                            <th>Assigned Teachers</th>
+                            <th>Issue</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {report.subjects.map((s: any) => (
+                            <tr key={s.id}>
+                              <td><strong>{s.name}</strong></td>
+                              <td><span className="badge badge-gray">{s.code}</span></td>
+                              <td style={{ fontWeight: 700 }}>{s.periodsPerWeek}</td>
+                              <td>{s.consecutiveSlots > 1 ? `${s.consecutiveSlots}×` : '—'}</td>
+                              <td>{s.isCore ? '✅' : '—'}</td>
+                              <td>{s.eveningPriority ? '🌇' : '—'}</td>
+                              <td>{s.useClassTeacher ? '✅' : '—'}</td>
+                              <td>{s.fixedDay != null ? `Day ${s.fixedDay}` : '—'}</td>
+                              <td>{s.fixedSlot != null ? `Slot ${s.fixedSlot}` : '—'}</td>
+                              <td>
+                                {s.teachers.length === 0
+                                  ? <span style={{ color: '#dc2626' }}>⚠️ None</span>
+                                  : s.teachers.map((t: any) => (
+                                    <span key={t.id} style={{ marginRight: 6, fontSize: 12 }}>{t.name} ({t.code})</span>
+                                  ))}
+                              </td>
+                              <td>
+                                {s.hasNoTeacher
+                                  ? <span className="badge badge-red">No teacher → will be skipped</span>
+                                  : <span className="badge badge-green">OK</span>}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+
+                {/* TEACHERS SUB-TAB */}
+                {reportTab === 'teachers' && (
+                  <div>
+                    {report.teachers.map((t: any) => (
+                      <div key={t.id} className="card" style={{ marginBottom: 12 }}>
+                        <div className="card-header">
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                            <div style={{
+                              width: 36, height: 36, borderRadius: '50%',
+                              background: t.isOverloaded ? '#fef2f2' : t.isIdle ? '#f3f4f6' : '#f0fdf4',
+                              display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, flexShrink: 0,
+                            }}>
+                              {t.isOverloaded ? '🔴' : t.isIdle ? '😴' : '👩‍🏫'}
+                            </div>
+                            <div>
+                              <div style={{ fontWeight: 700 }}>{t.name} <span style={{ fontWeight: 400, fontSize: 12, color: 'var(--gray-500)' }}>({t.code})</span></div>
+                              <div style={{ fontSize: 12, color: 'var(--gray-500)' }}>
+                                Teaches: {t.subjects.map((s: any) => s.subjectName).join(', ') || '—'}
+                              </div>
+                            </div>
+                            <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center' }}>
+                              <div style={{ textAlign: 'right' }}>
+                                <div style={{
+                                  fontSize: 20, fontWeight: 800,
+                                  color: t.isOverloaded ? '#dc2626' : t.utilisation >= 90 ? '#16a34a' : t.utilisation >= 70 ? '#d97706' : '#6b7280',
+                                }}>
+                                  {t.totalDemand}/{t.totalCapacity}
+                                </div>
+                                <div style={{ fontSize: 11, color: 'var(--gray-500)' }}>periods/week ({t.utilisation}%)</div>
+                              </div>
+                            </div>
+                          </div>
+                          {/* Utilisation bar */}
+                          <div style={{ marginTop: 8 }}>
+                            <div style={{ height: 6, borderRadius: 99, background: 'var(--border-color)', overflow: 'hidden' }}>
+                              <div style={{
+                                height: '100%', borderRadius: 99,
+                                width: `${Math.min(t.utilisation, 100)}%`,
+                                background: t.isOverloaded ? '#dc2626' : t.utilisation >= 90 ? '#16a34a' : '#d97706',
+                                transition: 'width 0.4s ease',
+                              }} />
+                            </div>
+                            {t.isOverloaded && (
+                              <div style={{ fontSize: 11, color: '#dc2626', marginTop: 4 }}>
+                                ⚠️ Overloaded by {t.totalDemand - t.totalCapacity} period(s) — some classes will be unscheduled
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                        {/* Division breakdown */}
+                        {t.divisionBreakdown.length > 0 && (
+                          <div className="card-body" style={{ paddingTop: 8, paddingBottom: 8 }}>
+                            <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--gray-600)', marginBottom: 6 }}>Division breakdown:</div>
+                            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                              {t.divisionBreakdown.map((b: any, i: number) => (
+                                <span key={i} style={{
+                                  fontSize: 12, padding: '3px 9px', borderRadius: 99,
+                                  background: 'var(--surface-bg, #f3f4f6)', border: '1px solid var(--border-color)',
+                                }}>
+                                  <strong>{b.divisionLabel}</strong> — {b.subjectName} ({b.periods}p)
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                        {t.isIdle && (
+                          <div className="card-body" style={{ paddingTop: 4 }}>
+                            <span style={{ fontSize: 12, color: '#6b7280' }}>😴 No periods assigned — teacher has no matching subject-division pairs.</span>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </>
+            )}
           </div>
         )}
       </div>
@@ -956,31 +1941,34 @@ export default function TimetablePage() {
 // Layout: Rows = Days, Columns = Periods
 
 // ─── Helper: build parallel cell label for MAL1/SAN/ARA ────────────────────
-// For Division A: when subject has language variants, show combined code + teachers
-function buildParallelCell(entry: any, divisionName: string, variantTeacherMap: Record<string, string>) {
+function buildParallelCell(entry: any, divisionId: string, day: number, slot: number, allEntries: any[]) {
   if (!entry) return null;
-  // Only Division A gets the parallel Sanskrit/Arabic treatment
-  if (divisionName !== 'A') return null;
-  // Subject must have language variants and not itself be a language variant
   if (entry.subject?.isLanguageVariant) return null;
-  const variants: any[] = entry.subject?.variants ?? [];
-  if (variants.length === 0) return null;
 
-  // Build combined code: MAL1/SAN/ARA
-  const codes = [entry.subject.code, ...variants.map((v: any) => v.code)];
-  const teacherCodes = [
-    entry.teacher?.teacherCode,
-    ...variants.map((v: any) => variantTeacherMap[v.id] ?? '?'),
-  ];
+  const cellEntries = allEntries.filter(
+    (e: any) => e.divisionId === divisionId && e.dayOfWeek === day && e.slotNumber === slot
+  );
+  if (cellEntries.length <= 1) return null;
+
+  // Enforce consistent sorting: base subject first, then variants alphabetically by code
+  cellEntries.sort((a: any, b: any) => {
+    const aIsVar = a.subject?.isLanguageVariant ? 1 : 0;
+    const bIsVar = b.subject?.isLanguageVariant ? 1 : 0;
+    if (aIsVar !== bIsVar) return aIsVar - bIsVar;
+    return (a.subject?.code || '').localeCompare(b.subject?.code || '');
+  });
+
+  const codes = cellEntries.map((e: any) => e.subject?.code || e.subject?.name || '?');
+  const teacherCodes = cellEntries.map((e: any) => e.teacher?.teacherCode || '?');
   return { codes, teacherCodes };
 }
 
-function InvertedTimetableGrid({ div, days, slots, getEntry, variantTeacherMap }: {
+function InvertedTimetableGrid({ div, days, slots, getEntry, entries }: {
   div: any;
   days: number[];
   slots: number[];
   getEntry: (divId: string, day: number, slot: number) => any;
-  variantTeacherMap: Record<string, string>;
+  entries: any[];
 }) {
   const [isMobile, setIsMobile] = useState(false);
   const [activeDay, setActiveDay] = useState(1);
@@ -1025,7 +2013,7 @@ function InvertedTimetableGrid({ div, days, slots, getEntry, variantTeacherMap }
             }
 
             const entry = getEntry(div.id, activeDay, slot);
-            const parallel = buildParallelCell(entry, div.name, variantTeacherMap);
+            const parallel = buildParallelCell(entry, div.id, activeDay, slot, entries);
 
             return (
               <div key={slot} className={`tt-mobile-slot-card ${entry ? 'filled' : 'empty'}`}>
@@ -1035,11 +2023,7 @@ function InvertedTimetableGrid({ div, days, slots, getEntry, variantTeacherMap }
                     parallel ? (
                       <>
                         <div className="tt-slot-subject tt-parallel-subject">{parallel.codes.join('/')}</div>
-                        <div className="tt-slot-teacher">
-                          {parallel.teacherCodes.map((c, i) => (
-                            <span key={i} className="tt-parallel-code">{c}</span>
-                          ))}
-                        </div>
+                        <div className="tt-slot-teacher">👩‍🏫 {parallel.teacherCodes.join('/')}</div>
                       </>
                     ) : (
                       <>
@@ -1091,18 +2075,14 @@ function InvertedTimetableGrid({ div, days, slots, getEntry, variantTeacherMap }
               </td>
               {morningSlots.map(slot => {
                 const entry = getEntry(div.id, day, slot);
-                const parallel = buildParallelCell(entry, div.name, variantTeacherMap);
+                const parallel = buildParallelCell(entry, div.id, day, slot, entries);
                 return (
                   <td key={slot} className={`tt-entry-cell ${entry ? 'filled' : 'empty'}`}>
                     {entry ? (
                       parallel ? (
                         <div className="tt-entry-content tt-parallel-cell">
                           <span className="tt-subject tt-parallel-label">{parallel.codes.join('/')}</span>
-                          <div className="tt-parallel-teachers">
-                            {parallel.teacherCodes.map((c, i) => (
-                              <span key={i} className="tt-teacher">{c}</span>
-                            ))}
-                          </div>
+                          <span className="tt-teacher">{parallel.teacherCodes.join('/')}</span>
                         </div>
                       ) : (
                         <div className="tt-entry-content">
@@ -1121,18 +2101,14 @@ function InvertedTimetableGrid({ div, days, slots, getEntry, variantTeacherMap }
               </td>
               {afternoonSlots.map(slot => {
                 const entry = getEntry(div.id, day, slot);
-                const parallel = buildParallelCell(entry, div.name, variantTeacherMap);
+                const parallel = buildParallelCell(entry, div.id, day, slot, entries);
                 return (
                   <td key={slot} className={`tt-entry-cell tt-pm ${entry ? 'filled' : 'empty'}`}>
                     {entry ? (
                       parallel ? (
                         <div className="tt-entry-content tt-parallel-cell">
                           <span className="tt-subject tt-parallel-label">{parallel.codes.join('/')}</span>
-                          <div className="tt-parallel-teachers">
-                            {parallel.teacherCodes.map((c, i) => (
-                              <span key={i} className="tt-teacher">{c}</span>
-                            ))}
-                          </div>
+                          <span className="tt-teacher">{parallel.teacherCodes.join('/')}</span>
                         </div>
                       ) : (
                         <div className="tt-entry-content">
@@ -1157,12 +2133,12 @@ function InvertedTimetableGrid({ div, days, slots, getEntry, variantTeacherMap }
 // ─── Daily Inverted Grid ─────────────────────────────────────────────────
 // Layout: Rows = Divisions, Columns = Periods
 
-function DailyInvertedGrid({ divisions, slots, selectedDay, getEntry, variantTeacherMap }: {
+function DailyInvertedGrid({ divisions, slots, selectedDay, getEntry, entries }: {
   divisions: any[];
   slots: number[];
   selectedDay: number;
   getEntry: (divId: string, day: number, slot: number) => any;
-  variantTeacherMap: Record<string, string>;
+  entries: any[];
 }) {
   const [isMobile, setIsMobile] = useState(false);
   const [activeDivision, setActiveDivision] = useState(divisions[0]?.id || '');
@@ -1214,7 +2190,7 @@ function DailyInvertedGrid({ divisions, slots, selectedDay, getEntry, variantTea
               }
 
               const entry = getEntry(selectedDiv.id, selectedDay, slot);
-              const parallel = buildParallelCell(entry, selectedDiv.name, variantTeacherMap);
+              const parallel = buildParallelCell(entry, selectedDiv.id, selectedDay, slot, entries);
 
               return (
                 <div key={slot} className={`tt-mobile-slot-card ${entry ? 'filled' : 'empty'}`}>
@@ -1224,11 +2200,7 @@ function DailyInvertedGrid({ divisions, slots, selectedDay, getEntry, variantTea
                       parallel ? (
                         <>
                           <div className="tt-slot-subject tt-parallel-subject">{parallel.codes.join('/')}</div>
-                          <div className="tt-slot-teacher">
-                            {parallel.teacherCodes.map((c, i) => (
-                              <span key={i} className="tt-parallel-code">{c}</span>
-                            ))}
-                          </div>
+                          <div className="tt-slot-teacher">👩‍🏫 {parallel.teacherCodes.join('/')}</div>
                         </>
                       ) : (
                         <>
@@ -1281,18 +2253,14 @@ function DailyInvertedGrid({ divisions, slots, selectedDay, getEntry, variantTea
               </td>
               {morningSlots.map(slot => {
                 const entry = getEntry(div.id, selectedDay, slot);
-                const parallel = buildParallelCell(entry, div.name, variantTeacherMap);
+                const parallel = buildParallelCell(entry, div.id, selectedDay, slot, entries);
                 return (
                   <td key={slot} className={`tt-entry-cell ${entry ? 'filled' : 'empty'}`}>
                     {entry ? (
                       parallel ? (
                         <div className="tt-entry-content tt-parallel-cell">
                           <span className="tt-subject tt-parallel-label">{parallel.codes.join('/')}</span>
-                          <div className="tt-parallel-teachers">
-                            {parallel.teacherCodes.map((c, i) => (
-                              <span key={i} className="tt-teacher">{c}</span>
-                            ))}
-                          </div>
+                          <span className="tt-teacher">{parallel.teacherCodes.join('/')}</span>
                         </div>
                       ) : (
                         <div className="tt-entry-content">
@@ -1311,18 +2279,14 @@ function DailyInvertedGrid({ divisions, slots, selectedDay, getEntry, variantTea
               </td>
               {afternoonSlots.map(slot => {
                 const entry = getEntry(div.id, selectedDay, slot);
-                const parallel = buildParallelCell(entry, div.name, variantTeacherMap);
+                const parallel = buildParallelCell(entry, div.id, selectedDay, slot, entries);
                 return (
                   <td key={slot} className={`tt-entry-cell tt-pm ${entry ? 'filled' : 'empty'}`}>
                     {entry ? (
                       parallel ? (
                         <div className="tt-entry-content tt-parallel-cell">
                           <span className="tt-subject tt-parallel-label">{parallel.codes.join('/')}</span>
-                          <div className="tt-parallel-teachers">
-                            {parallel.teacherCodes.map((c, i) => (
-                              <span key={i} className="tt-teacher">{c}</span>
-                            ))}
-                          </div>
+                          <span className="tt-teacher">{parallel.teacherCodes.join('/')}</span>
                         </div>
                       ) : (
                         <div className="tt-entry-content">
@@ -1354,6 +2318,112 @@ function EmptyState() {
         <h3>No Timetable Generated</h3>
         <p>Set up classes, subjects, and teachers first, then click Generate Timetable</p>
       </div>
+    </div>
+  );
+}
+
+// ─── Teacher Timetable Grid ─────────────────────────────────────────────────
+// Layout: Rows = Days, Columns = Periods. Each cell shows Class/Division + Subject.
+
+function TeacherTimetableGrid({ entries, allDivisions, days, slots }: {
+  teacher?: any;
+  entries: any[];
+  allDivisions: any[];
+  days: number[];
+  slots: number[];
+}) {
+  const morningSlots = slots.filter((s: number) => s <= 4);
+  const afternoonSlots = slots.filter((s: number) => s > 4);
+
+  function getTeacherEntry(day: number, slot: number) {
+    return entries.find((e: any) => e.dayOfWeek === day && e.slotNumber === slot);
+  }
+
+  function getDivLabel(divId: string) {
+    const div = allDivisions.find((d: any) => d.id === divId);
+    return div ? (div.label || `${div.className || ''}${div.name || ''}`.trim()) : '?';
+  }
+
+  const DAY_NAMES = ['', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+  const DAY_SHORT = ['', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+  return (
+    <div className="tt-inverted-wrapper">
+      <table className="tt-inverted-table">
+        <thead>
+          <tr>
+            <th className="tt-corner-cell">Day \ Period</th>
+            {morningSlots.map((slot: number) => (
+              <th key={slot} className="tt-period-header tt-morning">
+                <div className="tt-period-num">P{slot}</div>
+                <div className="tt-period-label">Period {slot}</div>
+              </th>
+            ))}
+            <th className="tt-lunch-header">🍴</th>
+            {afternoonSlots.map((slot: number) => (
+              <th key={slot} className="tt-period-header tt-afternoon">
+                <div className="tt-period-num">P{slot}</div>
+                <div className="tt-period-label">Period {slot}</div>
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {days.map((day: number) => (
+            <tr key={day} className="tt-day-row">
+              <td className="tt-day-header">
+                <div className="tt-day-name">{DAY_NAMES[day]}</div>
+                <div className="tt-day-short">{DAY_SHORT[day]}</div>
+              </td>
+              {morningSlots.map((slot: number) => {
+                const entry = getTeacherEntry(day, slot);
+                return (
+                  <td key={slot} className={`tt-entry-cell ${entry ? 'filled' : 'empty'}`}>
+                    {entry ? (
+                      <div className="tt-entry-content">
+                        <span className="tt-subject" style={{ color: 'var(--primary-700)', fontSize: 12 }}>
+                          {entry.subject?.code || entry.subject?.name || '?'}
+                        </span>
+                        <span className="tt-teacher" style={{
+                          background: 'var(--primary-100)', color: 'var(--primary-700)',
+                          fontWeight: 700, fontSize: 11,
+                        }}>
+                          {getDivLabel(entry.divisionId)}
+                        </span>
+                      </div>
+                    ) : (
+                      <span className="tt-empty-mark">—</span>
+                    )}
+                  </td>
+                );
+              })}
+              <td className="tt-lunch-cell"><span>Lunch</span></td>
+              {afternoonSlots.map((slot: number) => {
+                const entry = getTeacherEntry(day, slot);
+                return (
+                  <td key={slot} className={`tt-entry-cell tt-pm ${entry ? 'filled' : 'empty'}`}>
+                    {entry ? (
+                      <div className="tt-entry-content">
+                        <span className="tt-subject" style={{ color: 'var(--primary-700)', fontSize: 12 }}>
+                          {entry.subject?.code || entry.subject?.name || '?'}
+                        </span>
+                        <span className="tt-teacher" style={{
+                          background: 'var(--primary-100)', color: 'var(--primary-700)',
+                          fontWeight: 700, fontSize: 11,
+                        }}>
+                          {getDivLabel(entry.divisionId)}
+                        </span>
+                      </div>
+                    ) : (
+                      <span className="tt-empty-mark">—</span>
+                    )}
+                  </td>
+                );
+              })}
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }
@@ -1708,13 +2778,167 @@ const timetableStyles = `
   .tt-lunch-cell { font-size: 9px; }
 }
 
+/* ── Report Tab ── */
+.tt-report-tab { display: flex; flex-direction: column; gap: 0; }
+
+.tt-report-config-banner {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+  gap: 10px;
+  margin-bottom: 16px;
+}
+.tt-report-config-tile {
+  display: flex; flex-direction: column; align-items: center;
+  padding: 12px 8px; border-radius: 12px; text-align: center;
+  background: var(--bg-card); border: 1px solid var(--border-color);
+  gap: 4px;
+}
+.tt-config-icon { font-size: 20px; }
+.tt-config-value { font-size: 22px; font-weight: 800; color: var(--primary-600); line-height: 1; }
+.tt-config-label { font-size: 10px; color: var(--gray-500); font-weight: 600; text-transform: uppercase; letter-spacing: .4px; }
+
+.tt-report-chip {
+  display: inline-flex; align-items: center;
+  padding: 4px 12px; border-radius: 999px;
+  font-size: 12px; font-weight: 600; white-space: nowrap;
+}
+.tt-report-chip.error { background: #fef2f2; color: #dc2626; border: 1px solid rgba(220,38,38,.2); }
+.tt-report-chip.warning { background: #fffbeb; color: #d97706; border: 1px solid rgba(217,119,6,.2); }
+.tt-report-chip.info { background: #eff6ff; color: #2563eb; border: 1px solid rgba(37,99,235,.2); }
+.tt-report-chip.success { background: #f0fdf4; color: #16a34a; border: 1px solid rgba(22,163,74,.2); }
+.tt-report-chip.neutral { background: var(--gray-100); color: var(--gray-600); border: 1px solid var(--border-color); }
+
+.tt-report-subtab {
+  padding: 8px 16px; font-size: 13px; font-weight: 600;
+  color: var(--gray-500); border: none; background: none;
+  border-bottom: 2px solid transparent; margin-bottom: -2px;
+  cursor: pointer; transition: all var(--transition);
+  white-space: nowrap;
+}
+.tt-report-subtab:hover { color: var(--gray-800); }
+.tt-report-subtab.active { color: var(--primary-600); border-bottom-color: var(--primary-600); }
+
+.tt-report-table {
+  width: 100%; border-collapse: collapse; font-size: 12.5px;
+  min-width: 700px;
+}
+.tt-report-table thead tr th {
+  background: var(--gray-50); border-bottom: 2px solid var(--border-color);
+  padding: 9px 12px; text-align: left; font-weight: 700;
+  font-size: 11px; text-transform: uppercase; letter-spacing: .4px;
+  color: var(--gray-600); white-space: nowrap;
+}
+.tt-report-table tbody tr td {
+  padding: 9px 12px; border-bottom: 1px solid var(--border-color);
+  vertical-align: middle;
+}
+.tt-report-table tbody tr:hover td { background: var(--gray-50); }
+.tt-report-table tbody tr:last-child td { border-bottom: none; }
+
 /* ── Print ── */
 @media print {
   .tt-analysis-panel, .tt-conditions, .tabs,
   .tt-result-banner, .no-print { display: none !important; }
-  .tt-inverted-table { font-size: 10px; }
+  
+  /* Force containers to show all overflowing content without clipping or scrollbars */
+  .card-body, .card, .tt-inverted-wrapper {
+    overflow: visible !important;
+    overflow-x: visible !important;
+  }
+  
+  /* Allow table and cells to compress and auto-fit the page width */
+  .tt-inverted-table {
+    width: 100% !important;
+    min-width: auto !important;
+    font-size: 10px !important;
+    table-layout: fixed !important;
+  }
+  
+  .tt-corner-cell {
+    min-width: auto !important;
+    width: 12% !important;
+    padding: 6px 4px !important;
+    font-size: 9px !important;
+  }
+  
+  .tt-period-header {
+    min-width: auto !important;
+    width: 11% !important;
+    padding: 6px 2px !important;
+  }
+  
+  .tt-lunch-header {
+    min-width: auto !important;
+    width: 11% !important;
+    padding: 6px 2px !important;
+  }
+  
+  .tt-lunch-cell {
+    min-width: auto !important;
+    padding: 6px 2px !important;
+  }
+  
+  .tt-period-num {
+    font-size: 11px !important;
+  }
+  
+  .tt-period-label {
+    font-size: 8px !important;
+  }
+  
+  .tt-day-header {
+    padding: 6px 4px !important;
+  }
+  
+  .tt-day-name {
+    font-size: 10px !important;
+  }
+  
+  .tt-entry-cell {
+    padding: 4px 2px !important;
+  }
+  
+  .tt-subject {
+    font-size: 9px !important;
+    word-break: break-all !important;
+  }
+  
+  .tt-teacher {
+    font-size: 8px !important;
+    padding: 0 2px !important;
+  }
+
+  /* Parallel MAL1/SAN/ARA styles for print */
+  .tt-parallel-cell {
+    padding: 2px !important;
+  }
+  
+  .tt-parallel-label {
+    background: #e0f2fe !important;
+    -webkit-print-color-adjust: exact;
+    color: #004d40 !important;
+    font-size: 8px !important;
+    padding: 1px 3px !important;
+    line-height: 1.1 !important;
+    letter-spacing: 0 !important;
+  }
+  
+  .tt-parallel-teachers {
+    gap: 1px !important;
+  }
+  
+  .tt-parallel-teachers .tt-teacher {
+    font-size: 8px !important;
+    padding: 0 2px !important;
+  }
+  
   .tt-period-header.tt-morning { background: #2d6a4f !important; -webkit-print-color-adjust: exact; }
   .tt-period-header.tt-afternoon { background: #1e5c42 !important; -webkit-print-color-adjust: exact; }
-  .tt-parallel-label { background: #e0f2fe !important; -webkit-print-color-adjust: exact; color: #004d40 !important; }
+  
+  .tt-print-card {
+    break-inside: avoid !important;
+    page-break-inside: avoid !important;
+    margin-bottom: 24px !important;
+  }
 }
 `;

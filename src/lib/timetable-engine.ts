@@ -26,6 +26,8 @@ export interface TimetableInput {
   days: number;        // 5 or 6
   slotsPerDay: number; // e.g. 7
   morningPeriods: number; // periods before lunch, e.g. 4
+  // PE-group shared subjects: treated as co-scheduled base subjects during solving
+  sharedSubjectIds?: string[];
 }
 
 export interface DivisionInput {
@@ -36,6 +38,7 @@ export interface DivisionInput {
   subjects: DivisionSubjectInput[];
   coScheduledDivisions?: { divisionId: string; teacherId: string }[];
   isFollowerDivision?: boolean;
+  variantTeacherIds?: string[];
 }
 
 export interface DivisionSubjectInput {
@@ -49,6 +52,9 @@ export interface DivisionSubjectInput {
   fixedDay: number | null;    // 1–6; null = flexible
   fixedSlot: string | null;   // "FIRST" | "LAST" | "1"–"12"; null = flexible
   useClassTeacher: boolean;   // if true, use division.classTeacherId
+  // Shared venue/resource: subjects with the same non-null value cannot be
+  // scheduled at the same (day, slot) across any division school-wide.
+  sharedVenueGroupId: string | null;
 }
 
 export interface SubjectInput {

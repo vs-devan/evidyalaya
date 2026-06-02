@@ -17,7 +17,7 @@ const FIXED_SLOT_OPTIONS = [
 const EMPTY_FORM = {
   name: '', code: '', periodsPerWeek: 1, isCore: true,
   eveningPriority: false, consecutiveSlots: 1, isLanguageVariant: false, replacesSubjectId: '',
-  fixedDay: '' as string | number, fixedSlot: '', useClassTeacher: false,
+  fixedDay: '' as string | number, fixedSlot: '', useClassTeacher: false, sharedVenueGroupId: '',
 };
 
 export default function SubjectsPage() {
@@ -120,6 +120,7 @@ export default function SubjectsPage() {
       fixedDay: subject.fixedDay ?? '',
       fixedSlot: subject.fixedSlot ?? '',
       useClassTeacher: subject.useClassTeacher ?? false,
+      sharedVenueGroupId: subject.sharedVenueGroupId ?? '',
     });
     setShowModal(true);
   }
@@ -131,33 +132,55 @@ export default function SubjectsPage() {
 
     if (editingSubject) {
       // PATCH existing
-      const res = await fetch('/api/subjects', {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: editingSubject.id, ...payload }),
-      });
-      const data = await res.json();
-      if (data.success) {
-        setShowModal(false);
-        setMessage(`✓ "${form.name}" updated successfully.`);
-        fetchSubjects();
-      } else {
-        setMessage(`Error: ${data.error || 'Failed to update subject'}`);
+      try {
+        const res = await fetch('/api/subjects', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: editingSubject.id, ...payload }),
+        });
+        
+        let data: any = {};
+        try {
+          data = await res.json();
+        } catch (e) {
+          // Response is not JSON (e.g. HTML error page or empty response)
+        }
+
+        if (res.ok && data.success) {
+          setShowModal(false);
+          setMessage(`✓ "${form.name}" updated successfully.`);
+          fetchSubjects();
+        } else {
+          setMessage(`Error: ${data.error || `Server error (${res.status})` || 'Failed to update subject'}`);
+        }
+      } catch (err: any) {
+        setMessage(`Error: ${err.message || 'Failed to connect to server'}`);
       }
     } else {
       // POST new
-      const res = await fetch('/api/subjects', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-      const data = await res.json();
-      if (data.success) {
-        setShowModal(false);
-        setMessage(`✓ "${form.name}" created successfully.`);
-        fetchSubjects();
-      } else {
-        setMessage(`Error: ${data.error || 'Failed to create subject'}`);
+      try {
+        const res = await fetch('/api/subjects', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+
+        let data: any = {};
+        try {
+          data = await res.json();
+        } catch (e) {
+          // Response is not JSON
+        }
+
+        if (res.ok && data.success) {
+          setShowModal(false);
+          setMessage(`✓ "${form.name}" created successfully.`);
+          fetchSubjects();
+        } else {
+          setMessage(`Error: ${data.error || `Server error (${res.status})` || 'Failed to create subject'}`);
+        }
+      } catch (err: any) {
+        setMessage(`Error: ${err.message || 'Failed to connect to server'}`);
       }
     }
     setLoading(false);
@@ -334,11 +357,13 @@ export default function SubjectsPage() {
                       </td>
                       <td><span className={`badge ${s.isCore ? 'badge-green' : 'badge-gold'}`}>{s.isCore ? 'Core' : 'Non-Core'}</span></td>
                       <td style={{ fontSize: 12 }}>
-                        {s.fixedDay || s.fixedSlot || s.useClassTeacher ? (
+                        {s.fixedDay || s.fixedSlot || s.useClassTeacher || s.sharedVenueGroupId || s.consecutiveSlots > 1 ? (
                           <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                            {s.consecutiveSlots > 1 && <span className="badge badge-blue" style={{ fontSize: 10 }}>⛓ {s.consecutiveSlots}-slot block</span>}
                             {s.fixedDay && <span className="badge badge-blue" style={{ fontSize: 10 }}>📅 {DAYS[s.fixedDay]}</span>}
                             {s.fixedSlot && <span className="badge badge-gold" style={{ fontSize: 10 }}>🕐 {s.fixedSlot === 'LAST' ? 'Last Period' : s.fixedSlot === 'FIRST' ? 'First Period' : `Period ${s.fixedSlot}`}</span>}
                             {s.useClassTeacher && <span className="badge badge-green" style={{ fontSize: 10 }}>👤 Class Teacher</span>}
+                            {s.sharedVenueGroupId && <span className="badge" style={{ fontSize: 10, background: '#f3e8ff', color: '#7c3aed', border: '1px solid #ddd6fe' }}>🏫 {s.sharedVenueGroupId}</span>}
                           </div>
                         ) : <span style={{ color: 'var(--gray-400)' }}>—</span>}
                       </td>
@@ -608,6 +633,22 @@ export default function SubjectsPage() {
                       <span style={{ fontSize: 12, color: 'var(--gray-500)', marginLeft: 6 }}>— The division's class teacher is auto-assigned (e.g. Recreation)</span>
                     </span>
                   </label>
+
+                  {/* Shared Venue Group */}
+                  <div className="form-group" style={{ marginTop: 14 }}>
+                    <label className="form-label">🏫 Shared Venue / Resource Group</label>
+                    <input
+                      className="form-input"
+                      value={(form as any).sharedVenueGroupId ?? ''}
+                      onChange={e => setForm({ ...form, sharedVenueGroupId: e.target.value } as any)}
+                      placeholder="e.g., computer-lab (leave blank if no shared venue)"
+                    />
+                    <span className="form-hint">
+                      Subjects with the same venue ID cannot be scheduled at the same time slot across <strong>any division</strong>.
+                      Example: set <code>computer-lab</code> on both IT and ITP so only one class uses the lab per period.
+                    </span>
+                  </div>
+
                   {(form.fixedDay || form.fixedSlot || form.useClassTeacher) && (
                     <div style={{ marginTop: 10, padding: '8px 12px', background: '#eff6ff', borderRadius: 6, fontSize: 12, color: '#1d4ed8' }}>
                       ℹ This subject will be pinned to

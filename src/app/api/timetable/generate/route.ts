@@ -55,10 +55,12 @@ export async function POST(req: NextRequest) {
 
   const tenantId = session.user.tenantId;
   let activeConstraints: string[] = [];
+  let peGroups: { subjectId: string; divisionIds: string[] }[] = [];
   let body: any = {};
   try {
     body = await req.json();
     activeConstraints = body.constraints || [];
+    peGroups = Array.isArray(body.peGroups) ? body.peGroups : [];
   } catch {}
 
   const encoder = new TextEncoder();
@@ -383,9 +385,24 @@ export async function POST(req: NextRequest) {
                   isCore: s.isCore, eveningPriority: s.eveningPriority,
                   consecutiveSlots, fixedDay: s.fixedDay, fixedSlot: s.fixedSlot,
                   useClassTeacher: s.useClassTeacher,
+                  sharedVenueGroupId: s.sharedVenueGroupId ?? null,
                 };
               })
               .filter(s => s.teacherId && s.periodsPerWeek > 0);
+
+            // Resolve active language variant teachers for this division
+            const activeVariantTeacherIds: string[] = [];
+            const variantsForDiv = subjects.filter(s => s.isLanguageVariant && s.replacesSubjectId);
+            for (const vSub of variantsForDiv) {
+              if (exclusionSet.has(`${div.id}:${vSub.id}`)) continue;
+              const vTeacherId = resolveTeacher(
+                vSub.id, div.id, vSub.useClassTeacher,
+                div.classTeacherId, `${cls.name}${div.name}`, vSub.name,
+              );
+              if (vTeacherId) {
+                activeVariantTeacherIds.push(vTeacherId);
+              }
+            }
 
             divisionInputs.push({
               id: div.id,
@@ -393,7 +410,50 @@ export async function POST(req: NextRequest) {
               classId: cls.id,
               classTeacherId: div.classTeacherId,
               subjects: divSubjects,
+              variantTeacherIds: activeVariantTeacherIds,
             });
+          }
+        }
+
+        // ─── PE Group Co-scheduling Injection ────────────────────────────────
+        // For each configured PE group, remove the shared subject from follower
+        // divisions and wire up coScheduledDivisions on the lead division.
+        const peGroupSubjectIds = new Set<string>();
+        for (const group of peGroups) {
+          if (!group.subjectId || !Array.isArray(group.divisionIds) || group.divisionIds.length < 2) continue;
+
+          const validDivIds = group.divisionIds.filter(id =>
+            divisionInputs.some(di => di.id === id)
+          );
+          if (validDivIds.length < 2) continue;
+
+          peGroupSubjectIds.add(group.subjectId);
+
+          const [leadId, ...followerIds] = validDivIds;
+          const leadInput = divisionInputs.find(di => di.id === leadId);
+          if (!leadInput) continue;
+
+          // Initialise coScheduledDivisions on lead if needed
+          if (!leadInput.coScheduledDivisions) leadInput.coScheduledDivisions = [];
+
+          for (const followerId of followerIds) {
+            const followerInput = divisionInputs.find(di => di.id === followerId);
+            if (!followerInput) continue;
+
+            // Find the PE subject's teacher for this follower
+            const followerPeSub = followerInput.subjects.find(s => s.subjectId === group.subjectId);
+            if (!followerPeSub) continue;
+
+            // Wire follower into lead's co-scheduled list
+            leadInput.coScheduledDivisions.push({
+              divisionId: followerId,
+              teacherId: followerPeSub.teacherId,
+            });
+
+            // Remove PE subject from follower so solver doesn't double-schedule it
+            followerInput.subjects = followerInput.subjects.filter(
+              s => s.subjectId !== group.subjectId
+            );
           }
         }
 
@@ -511,6 +571,8 @@ export async function POST(req: NextRequest) {
           days: workingDays,
           slotsPerDay: periodsPerDay,
           morningPeriods,
+          // PE groups: tells solver to co-schedule these subjects across grouped divisions
+          sharedSubjectIds: peGroupSubjectIds.size > 0 ? Array.from(peGroupSubjectIds) : undefined,
         };
 
         const totalExpectedSlots = divisionInputs.reduce(
@@ -650,14 +712,12 @@ export async function POST(req: NextRequest) {
                   // Verify variant teachers are free (since they are shared in Division A)
                   let variantTeacherBusy = false;
                   for (const member of coGroup) {
-                    const divName = divisionNames.get(member.divisionId) ?? '';
-                    if (divName.endsWith('A')) {
-                      const varTeachers = variantTeachersByBase.get(slot.subjectId) || [];
-                      for (const vtId of varTeachers) {
-                        if (teacherOccupied.has(`${vtId}:${slot.dayOfWeek}:${slot.slotNumber}`)) {
-                          variantTeacherBusy = true;
-                          break;
-                        }
+                    const divInput = engineInput.divisions.find(d => d.id === member.divisionId);
+                    const varTeachers = divInput?.variantTeacherIds || [];
+                    for (const vtId of varTeachers) {
+                      if (teacherOccupied.has(`${vtId}:${slot.dayOfWeek}:${slot.slotNumber}`)) {
+                        variantTeacherBusy = true;
+                        break;
                       }
                     }
                     if (variantTeacherBusy) break;
@@ -676,12 +736,10 @@ export async function POST(req: NextRequest) {
                     occupied.add(`${member.divisionId}:${slot.dayOfWeek}:${slot.slotNumber}`);
                     teacherOccupied.add(`${member.teacherId}:${slot.dayOfWeek}:${slot.slotNumber}`);
                     
-                    const divName = divisionNames.get(member.divisionId) ?? '';
-                    if (divName.endsWith('A')) {
-                      const varTeachers = variantTeachersByBase.get(slot.subjectId) || [];
-                      for (const vtId of varTeachers) {
-                        teacherOccupied.add(`${vtId}:${slot.dayOfWeek}:${slot.slotNumber}`);
-                      }
+                    const divInput = engineInput.divisions.find(d => d.id === member.divisionId);
+                    const varTeachers = divInput?.variantTeacherIds || [];
+                    for (const vtId of varTeachers) {
+                      teacherOccupied.add(`${vtId}:${slot.dayOfWeek}:${slot.slotNumber}`);
                     }
                   }
                   addedCount += coGroup.length;
@@ -692,15 +750,13 @@ export async function POST(req: NextRequest) {
 
                   if (occupied.has(divKey) || teacherOccupied.has(tKey)) continue;
 
-                  const divName = divisionNames.get(slot.divisionId) ?? '';
+                  const divInput = engineInput.divisions.find(d => d.id === slot.divisionId);
+                  const varTeachers = divInput?.variantTeacherIds || [];
                   let variantTeacherBusy = false;
-                  if (divName.endsWith('A')) {
-                    const varTeachers = variantTeachersByBase.get(slot.subjectId) || [];
-                    for (const vtId of varTeachers) {
-                      if (teacherOccupied.has(`${vtId}:${slot.dayOfWeek}:${slot.slotNumber}`)) {
-                        variantTeacherBusy = true;
-                        break;
-                      }
+                  for (const vtId of varTeachers) {
+                    if (teacherOccupied.has(`${vtId}:${slot.dayOfWeek}:${slot.slotNumber}`)) {
+                      variantTeacherBusy = true;
+                      break;
                     }
                   }
                   if (variantTeacherBusy) continue;
@@ -714,11 +770,8 @@ export async function POST(req: NextRequest) {
                   });
                   occupied.add(divKey);
                   teacherOccupied.add(tKey);
-                  if (divName.endsWith('A')) {
-                    const varTeachers = variantTeachersByBase.get(slot.subjectId) || [];
-                    for (const vtId of varTeachers) {
-                      teacherOccupied.add(`${vtId}:${slot.dayOfWeek}:${slot.slotNumber}`);
-                    }
+                  for (const vtId of varTeachers) {
+                    teacherOccupied.add(`${vtId}:${slot.dayOfWeek}:${slot.slotNumber}`);
                   }
                   addedCount++;
                 }
@@ -748,13 +801,45 @@ export async function POST(req: NextRequest) {
         }
 
         // ─── Phase 6: Save ──────────────────────────────────────────────────
-        emit({ phase: 'saving', pct: 90, label: 'Clearing old timetable entries…' });
-        await prisma.timetableEntry.deleteMany({ where: { tenantId } });
+        // Expand finalTimetable to include parallel language variants
+        const expandedTimetable: any[] = [];
+        for (const entry of finalTimetable) {
+          expandedTimetable.push(entry);
 
-        emit({ phase: 'saving', pct: 93, label: `Saving ${finalTimetable.length} new entries…` });
-        if (finalTimetable.length > 0) {
+          // If this entry is Malayalam I, add parallel entries for active variants
+          const sub = subjects.find(s => s.id === entry.subjectId);
+          if (sub && !sub.isLanguageVariant) {
+            const variants = subjects.filter(v => v.isLanguageVariant && v.replacesSubjectId === sub.id);
+            if (variants.length > 0) {
+              for (const vSub of variants) {
+                if (exclusionSet.has(`${entry.divisionId}:${vSub.id}`)) continue;
+                const divObj = classes.flatMap(c => c.divisions).find(d => d.id === entry.divisionId);
+                const classObj = classes.find(c => c.divisions.some(d => d.id === entry.divisionId));
+                if (divObj) {
+                  const vTeacherId = resolveTeacher(
+                    vSub.id, entry.divisionId, vSub.useClassTeacher,
+                    divObj.classTeacherId, classObj ? `${classObj.name}${divObj.name}` : entry.divisionId, vSub.name
+                  );
+                  if (vTeacherId) {
+                    expandedTimetable.push({
+                      divisionId: entry.divisionId,
+                      dayOfWeek: entry.dayOfWeek,
+                      slotNumber: entry.slotNumber,
+                      subjectId: vSub.id,
+                      teacherId: vTeacherId,
+                    });
+                  }
+                }
+              }
+            }
+          }
+        }
+
+        emit({ phase: 'saving', pct: 93, label: `Saving ${expandedTimetable.length} new entries…` });
+        await prisma.timetableEntry.deleteMany({ where: { tenantId } });
+        if (expandedTimetable.length > 0) {
           await prisma.timetableEntry.createMany({
-            data: finalTimetable.map((entry: any) => ({
+            data: expandedTimetable.map((entry: any) => ({
               tenantId,
               divisionId: entry.divisionId,
               dayOfWeek: entry.dayOfWeek,

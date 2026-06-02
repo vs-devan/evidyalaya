@@ -74,9 +74,9 @@ interface Variable {
   fixedDay: number | null;    // 1–6 or null
   fixedSlot: number | null;   // resolved slot number or null
   classTeacherId: string | null;
-  isDivA: boolean;
   variantTeacherIds: string[];
   coScheduledDivisions?: { divisionId: string; teacherId: string }[];
+  sharedVenueGroupId: string | null; // if set, enforces venue exclusivity across all divisions
 }
 
 interface Assignment {
@@ -127,6 +127,7 @@ class State {
   // Tracking maps (maintained incrementally)
   divGrid: Map<string, number>;       // "divId:d:s" → varIdx
   teacherGrid: Map<string, number>;   // "tid:d:s"   → varIdx
+  venueGrid: Map<string, number>;     // "venueGroupId:d:s" → varIdx
   sdCount: Map<string, number>;       // "divId:subId:d" → count
   tLoad: Map<string, number>;         // teacherId → total assigned slots
 
@@ -139,6 +140,7 @@ class State {
     this.asgn = new Array(vars.length).fill(undefined);
     this.divGrid     = new Map();
     this.teacherGrid = new Map();
+    this.venueGrid   = new Map();
     this.sdCount     = new Map();
     this.tLoad       = new Map();
     this.assignedCount = 0;
@@ -162,6 +164,10 @@ class State {
     return !this.teacherGrid.has(`${tid}:${d}:${s}`);
   }
 
+  venueFree(venueGroupId: string, d: number, s: number): boolean {
+    return !this.venueGrid.has(`${venueGroupId}:${d}:${s}`);
+  }
+
   /** Can variable v be placed at (day, slot) without violating hard constraints? */
   canPlace(v: Variable, d: number, s: number): boolean {
     for (let i = 0; i < v.blockSize; i++) {
@@ -170,6 +176,10 @@ class State {
       if (!this.divSlotFree(v.divisionId, d, slot)) return false;
       if (!this.teacherFree(v.teacherId, d, slot))  return false;
 
+      // Shared venue constraint: check that no other division is using
+      // this venue group at the same (day, slot)
+      if (v.sharedVenueGroupId && !this.venueFree(v.sharedVenueGroupId, d, slot)) return false;
+
       if (v.coScheduledDivisions) {
         for (const co of v.coScheduledDivisions) {
           if (!this.divSlotFree(co.divisionId, d, slot)) return false;
@@ -177,7 +187,7 @@ class State {
         }
       }
 
-      if (v.isDivA && v.variantTeacherIds.length > 0) {
+      if (v.variantTeacherIds.length > 0) {
         for (const vtId of v.variantTeacherIds) {
           if (!this.teacherFree(vtId, d, slot)) return false;
         }
@@ -200,6 +210,11 @@ class State {
       this.divGrid.set(`${v.divisionId}:${d}:${s + i}`, vi);
       this.teacherGrid.set(`${v.teacherId}:${d}:${s + i}`, vi);
 
+      // Register venue occupancy (school-wide shared resource)
+      if (v.sharedVenueGroupId) {
+        this.venueGrid.set(`${v.sharedVenueGroupId}:${d}:${s + i}`, vi);
+      }
+
       if (v.coScheduledDivisions) {
         for (const co of v.coScheduledDivisions) {
           this.divGrid.set(`${co.divisionId}:${d}:${s + i}`, vi);
@@ -207,7 +222,7 @@ class State {
         }
       }
 
-      if (v.isDivA && v.variantTeacherIds.length > 0) {
+      if (v.variantTeacherIds.length > 0) {
         for (const vtId of v.variantTeacherIds) {
           this.teacherGrid.set(`${vtId}:${d}:${s + i}`, vi);
         }
@@ -237,6 +252,11 @@ class State {
       this.divGrid.delete(`${v.divisionId}:${a.day}:${a.slot + i}`);
       this.teacherGrid.delete(`${v.teacherId}:${a.day}:${a.slot + i}`);
 
+      // Release venue occupancy
+      if (v.sharedVenueGroupId) {
+        this.venueGrid.delete(`${v.sharedVenueGroupId}:${a.day}:${a.slot + i}`);
+      }
+
       if (v.coScheduledDivisions) {
         for (const co of v.coScheduledDivisions) {
           this.divGrid.delete(`${co.divisionId}:${a.day}:${a.slot + i}`);
@@ -244,7 +264,7 @@ class State {
         }
       }
 
-      if (v.isDivA && v.variantTeacherIds.length > 0) {
+      if (v.variantTeacherIds.length > 0) {
         for (const vtId of v.variantTeacherIds) {
           this.teacherGrid.delete(`${vtId}:${a.day}:${a.slot + i}`);
         }
@@ -288,6 +308,12 @@ function buildVariables(input: TimetableInput): Variable[] {
   // 1. Map each base subject to its variant subject IDs
   const variantSubjectsByBase = new Map<string, string[]>();
   const baseSubjectIds = new Set<string>();
+
+  // Shared PE-group subjects are co-scheduled like language-variant base subjects
+  for (const id of (input.sharedSubjectIds ?? [])) {
+    baseSubjectIds.add(id);
+  }
+
   for (const s of input.subjects as any) {
     if (s.isLanguageVariant && s.replacesSubjectId) {
       const baseId = s.replacesSubjectId;
@@ -327,7 +353,6 @@ function buildVariables(input: TimetableInput): Variable[] {
   }
 
   for (const div of input.divisions) {
-    const isDivA = div.name.endsWith('A');
     for (const ds of div.subjects) {
       // Skip scheduling base subjects for follower divisions
       if (div.isFollowerDivision && baseSubjectIds.has(ds.subjectId)) {
@@ -344,8 +369,9 @@ function buildVariables(input: TimetableInput): Variable[] {
       const remainder = ds.periodsPerWeek - numBlocks * blockSize;
 
       const fixedSlot = resolveSlotNumber(ds.fixedSlot, input.slotsPerDay);
-      const variantTeacherIds = variantTeachersByBase.get(ds.subjectId) || [];
+      const variantTeacherIds = baseSubjectIds.has(ds.subjectId) ? (div.variantTeacherIds ?? []) : [];
       const coScheduledDivisions = baseSubjectIds.has(ds.subjectId) ? div.coScheduledDivisions : undefined;
+      const sharedVenueGroupId = ds.sharedVenueGroupId ?? null;
 
       // Create block-sized variables
       for (let p = 0; p < numBlocks; p++) {
@@ -360,9 +386,9 @@ function buildVariables(input: TimetableInput): Variable[] {
           fixedDay: ds.fixedDay ?? null,
           fixedSlot,
           classTeacherId: div.classTeacherId,
-          isDivA,
           variantTeacherIds,
           coScheduledDivisions,
+          sharedVenueGroupId,
         });
         idx++;
       }
@@ -380,9 +406,9 @@ function buildVariables(input: TimetableInput): Variable[] {
           fixedDay: ds.fixedDay ?? null,
           fixedSlot,
           classTeacherId: div.classTeacherId,
-          isDivA,
           variantTeacherIds,
           coScheduledDivisions,
+          sharedVenueGroupId,
         });
         idx++;
       }

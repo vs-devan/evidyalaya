@@ -220,6 +220,10 @@ model Subject {
   fixedSlot       String? // if set, subject is pinned to this slot number
   // useClassTeacher: if true, the division's own class teacher is assigned
   useClassTeacher Boolean @default(false)
+  // sharedVenueGroupId: subjects sharing the same non-null value use the same
+  // physical venue/resource (e.g., "computer-lab") and cannot be scheduled
+  // at the same (day, slot) across any division school-wide.
+  sharedVenueGroupId String? // e.g., "computer-lab"
 
   tenant          Tenant   @relation(fields: [tenantId], references: [id])
   replacesSubject Subject? @relation("LanguageVariant", fields: [replacesSubjectId], references: [id])
@@ -235,6 +239,7 @@ model Subject {
   @@unique([tenantId, code])
   @@map("subjects")
 }
+
 
 // Per-class override for subject configuration
 // Allows different classes to have different periods/week for the same subject.
@@ -285,7 +290,7 @@ model TimetableEntry {
   subject  Subject  @relation(fields: [subjectId], references: [id])
   teacher  Teacher  @relation(fields: [teacherId], references: [id])
 
-  @@unique([divisionId, dayOfWeek, slotNumber])
+  @@unique([divisionId, dayOfWeek, slotNumber, subjectId])
   @@index([tenantId, dayOfWeek])
   @@index([teacherId, dayOfWeek])
   @@map("timetable_entries")

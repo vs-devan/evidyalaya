@@ -247,18 +247,34 @@ export async function POST(req: NextRequest) {
           fixedDay: subject.fixedDay,
           fixedSlot: subject.fixedSlot,
           useClassTeacher: subject.useClassTeacher,
+          sharedVenueGroupId: subject.sharedVenueGroupId ?? null,
         };
       }).filter(s => s.teacherId && s.periodsPerWeek > 0);
 
-      divisionInputs.push({
-        id: div.id,
-        name: `${cls.name}${div.name}`,
-        classId: cls.id,
-        classTeacherId: div.classTeacherId,
-        subjects: divSubjects,
-      });
-    }
-  }
+            // Resolve active language variant teachers for this division
+            const activeVariantTeacherIds: string[] = [];
+            const variantsForDiv = subjects.filter(s => s.isLanguageVariant && s.replacesSubjectId);
+            for (const vSub of variantsForDiv) {
+              if (exclusionSet.has(`${div.id}:${vSub.id}`)) continue;
+              const vTeacherId = resolveTeacher(
+                vSub.id, div.id, vSub.useClassTeacher,
+                div.classTeacherId, `${cls.name}${div.name}`, vSub.name,
+              );
+              if (vTeacherId) {
+                activeVariantTeacherIds.push(vTeacherId);
+              }
+            }
+
+            divisionInputs.push({
+              id: div.id,
+              name: `${cls.name}${div.name}`,
+              classId: cls.id,
+              classTeacherId: div.classTeacherId,
+              subjects: divSubjects,
+              variantTeacherIds: activeVariantTeacherIds,
+            });
+          }
+        }
 
   // --- Co-scheduling Analysis ---
   const variantBaseSubjectIds = new Set(
@@ -495,11 +511,45 @@ export async function POST(req: NextRequest) {
 
   const allWarnings = [...generationWarnings, ...(result.warnings ?? [])];
 
+  // Expand result.timetable to include parallel language variants
+  const expandedTimetable: any[] = [];
+  for (const entry of result.timetable) {
+    expandedTimetable.push(entry);
+
+    // If this entry is Malayalam I, add parallel entries for active variants
+    const sub = subjects.find(s => s.id === entry.subjectId);
+    if (sub && !sub.isLanguageVariant) {
+      const variants = subjects.filter(v => v.isLanguageVariant && v.replacesSubjectId === sub.id);
+      if (variants.length > 0) {
+        for (const vSub of variants) {
+          if (exclusionSet.has(`${entry.divisionId}:${vSub.id}`)) continue;
+          const divObj = classes.flatMap(c => c.divisions).find(d => d.id === entry.divisionId);
+          const classObj = classes.find(c => c.divisions.some(d => d.id === entry.divisionId));
+          if (divObj) {
+            const vTeacherId = resolveTeacher(
+              vSub.id, entry.divisionId, vSub.useClassTeacher,
+              divObj.classTeacherId, classObj ? `${classObj.name}${divObj.name}` : entry.divisionId, vSub.name
+            );
+            if (vTeacherId) {
+              expandedTimetable.push({
+                divisionId: entry.divisionId,
+                dayOfWeek: entry.dayOfWeek,
+                slotNumber: entry.slotNumber,
+                subjectId: vSub.id,
+                teacherId: vTeacherId,
+              });
+            }
+          }
+        }
+      }
+    }
+  }
+
   // Always persist whatever was generated
   await prisma.timetableEntry.deleteMany({ where: { tenantId } });
-  if (result.timetable.length > 0) {
+  if (expandedTimetable.length > 0) {
     await prisma.timetableEntry.createMany({
-      data: result.timetable.map(entry => ({
+      data: expandedTimetable.map(entry => ({
         tenantId,
         divisionId: entry.divisionId,
         dayOfWeek: entry.dayOfWeek,

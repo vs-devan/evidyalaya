@@ -34,13 +34,14 @@ export async function POST(req: NextRequest) {
   const {
     name, code, periodsPerWeek, isCore, eveningPriority, consecutiveSlots,
     isLanguageVariant, replacesSubjectId,
-    fixedDay, fixedSlot, useClassTeacher,
+    fixedDay, fixedSlot, useClassTeacher, sharedVenueGroupId,
   } = body;
 
   if (!name || !code) {
     return NextResponse.json({ error: 'Name and code are required' }, { status: 400 });
   }
 
+  // Create subject record in database
   const subject = await prisma.subject.create({
     data: {
       tenantId: session.user.tenantId,
@@ -52,9 +53,10 @@ export async function POST(req: NextRequest) {
       consecutiveSlots: consecutiveSlots || 1,
       isLanguageVariant: isLanguageVariant ?? false,
       replacesSubjectId: replacesSubjectId || null,
-      fixedDay: fixedDay ?? null,
-      fixedSlot: fixedSlot ?? null,
+      fixedDay: fixedDay !== undefined && fixedDay !== '' && fixedDay !== null ? parseInt(String(fixedDay), 10) : null,
+      fixedSlot: fixedSlot !== undefined && fixedSlot !== '' && fixedSlot !== null ? String(fixedSlot) : null,
       useClassTeacher: useClassTeacher ?? false,
+      sharedVenueGroupId: sharedVenueGroupId !== undefined && sharedVenueGroupId !== '' ? String(sharedVenueGroupId) : null,
     },
   });
 
@@ -72,7 +74,7 @@ export async function PATCH(req: NextRequest) {
   const {
     id, name, code, periodsPerWeek, isCore, eveningPriority, consecutiveSlots,
     isLanguageVariant, replacesSubjectId,
-    fixedDay, fixedSlot, useClassTeacher,
+    fixedDay, fixedSlot, useClassTeacher, sharedVenueGroupId,
   } = body;
 
   if (!id) return NextResponse.json({ error: 'Subject ID is required' }, { status: 400 });
@@ -83,6 +85,7 @@ export async function PATCH(req: NextRequest) {
   });
   if (!existing) return NextResponse.json({ error: 'Subject not found' }, { status: 404 });
 
+  // Update subject record in database
   const subject = await prisma.subject.update({
     where: { id },
     data: {
@@ -94,9 +97,12 @@ export async function PATCH(req: NextRequest) {
       consecutiveSlots: consecutiveSlots ?? existing.consecutiveSlots,
       isLanguageVariant: isLanguageVariant ?? existing.isLanguageVariant,
       replacesSubjectId: replacesSubjectId || null,
-      fixedDay: fixedDay !== undefined ? (fixedDay || null) : existing.fixedDay,
-      fixedSlot: fixedSlot !== undefined ? (fixedSlot || null) : existing.fixedSlot,
+      fixedDay: fixedDay !== undefined ? (fixedDay !== '' && fixedDay !== null ? parseInt(String(fixedDay), 10) : null) : existing.fixedDay,
+      fixedSlot: fixedSlot !== undefined ? (fixedSlot !== '' && fixedSlot !== null ? String(fixedSlot) : null) : existing.fixedSlot,
       useClassTeacher: useClassTeacher ?? existing.useClassTeacher,
+      sharedVenueGroupId: sharedVenueGroupId !== undefined
+        ? (sharedVenueGroupId !== '' && sharedVenueGroupId !== null ? String(sharedVenueGroupId) : null)
+        : existing.sharedVenueGroupId,
     },
   });
 
