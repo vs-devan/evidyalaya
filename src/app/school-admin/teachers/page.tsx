@@ -303,6 +303,7 @@ export default function TeachersPage() {
                 <tr>
                   <th>Code</th>
                   <th>Name</th>
+                  <th>Username</th>
                   <th>Designation</th>
                   <th>PEN</th>
                   <th>Subjects</th>
@@ -316,6 +317,7 @@ export default function TeachersPage() {
                   <tr key={t.id}>
                     <td><strong>{t.teacherCode}</strong></td>
                     <td>{t.user?.name}</td>
+                    <td><code style={{ fontSize: 13, background: 'rgba(0,0,0,0.05)', padding: '2px 6px', borderRadius: 4 }}>{t.user?.username || '—'}</code></td>
                     <td><span className="badge badge-blue">{t.designation}</span></td>
                     <td>{t.penNo || '—'}</td>
                     <td style={{ maxWidth: 200 }}>
@@ -333,7 +335,7 @@ export default function TeachersPage() {
                   </tr>
                 ))}
                 {filtered.length === 0 && (
-                  <tr><td colSpan={8} style={{ textAlign: 'center', padding: 40 }}>No teachers found</td></tr>
+                  <tr><td colSpan={9} style={{ textAlign: 'center', padding: 40 }}>No teachers found</td></tr>
                 )}
               </tbody>
             </table>
