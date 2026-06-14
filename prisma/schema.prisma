@@ -185,6 +185,7 @@ model Division {
   classId         String
   name            String // e.g., "A", "B", "C"
   classTeacherId  String? @unique
+  timetableLocked Boolean @default(false) // if true, timetable entries for this division are preserved during regeneration
 
   class        Class   @relation(fields: [classId], references: [id], onDelete: Cascade)
   classTeacher Teacher? @relation("ClassTeacher", fields: [classTeacherId], references: [id])

@@ -41,3 +41,13 @@ yarn-error.log*
 next-env.d.ts
 
 /src/generated/prisma
+
+# Local data, inspection scripts & credentials
+inspect_*.ts
+teacher_credentials.txt
+migrate_data.ps1
+vercel_credentials/
+user_guide.md
+teacher_user_guide.txt
+hosting_guide.md
+implementation_plan.md

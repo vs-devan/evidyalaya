@@ -134,7 +134,11 @@ class State {
   assignedCount: number;
   divisionCTs: Map<string, string>;   // divisionId → classTeacherId cache
 
-  constructor(vars: Variable[], cfg: SolverConfig) {
+  constructor(
+    vars: Variable[],
+    cfg: SolverConfig,
+    lockedSlots?: { teacherId: string; day: number; slot: number }[]
+  ) {
     this.vars = vars;
     this.cfg  = cfg;
     this.asgn = new Array(vars.length).fill(undefined);
@@ -150,6 +154,13 @@ class State {
     for (const v of vars) {
       if (v.classTeacherId) {
         this.divisionCTs.set(v.divisionId, v.classTeacherId);
+      }
+    }
+
+    // Pre-populate locked teacher slots so they are blocked for other scheduling variables
+    if (lockedSlots) {
+      for (const ls of lockedSlots) {
+        this.teacherGrid.set(`${ls.teacherId}:${ls.day}:${ls.slot}`, -999);
       }
     }
   }
@@ -170,6 +181,9 @@ class State {
 
   /** Can variable v be placed at (day, slot) without violating hard constraints? */
   canPlace(v: Variable, d: number, s: number): boolean {
+    // H5: Evening-priority subjects (PE, Art, etc.) must NOT be placed in slot 1
+    if (v.eveningPriority && s === 1) return false;
+
     for (let i = 0; i < v.blockSize; i++) {
       const slot = s + i;
       if (slot > this.cfg.slotsPerDay) return false;
@@ -436,6 +450,8 @@ function computeDomain(v: Variable, cfg: SolverConfig): Assignment[] {
       if (s + v.blockSize - 1 > cfg.slotsPerDay) continue;
       // Block must not span lunch
       if (v.blockSize > 1 && s <= cfg.morningPeriods && s + v.blockSize - 1 > cfg.morningPeriods) continue;
+      // Evening-priority subjects (PE, Art, etc.) must not be placed in slot 1
+      if (v.eveningPriority && s === 1) continue;
       domain.push({ day: d, slot: s });
     }
   }
@@ -1234,7 +1250,7 @@ export async function solveTimetable(
 
   // ── Phase 2: Initial solution (greedy with MRV) ───────────────────────────
   emit('constraint_propagation', 28, 'Computing initial solution via MRV heuristic…');
-  const state = new State(vars, cfg);
+  const state = new State(vars, cfg, input.lockedSlots);
   buildInitialSolution(state);
 
   const initScore = computeScore(state);

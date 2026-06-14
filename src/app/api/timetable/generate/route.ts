@@ -169,6 +169,45 @@ export async function POST(req: NextRequest) {
         const workingDays = tenant?.workingDays ?? 5;
         const morningPeriods = tenant?.morningPeriods ?? 4;
 
+        // ─── Determine locked divisions and their existing entries ──────────
+        const allDivisions = classes.flatMap((c: any) => c.divisions || []);
+        const lockedDivisionIds = new Set(
+          allDivisions.filter((d: any) => d.timetableLocked).map((d: any) => d.id)
+        );
+        const unlockedDivisionIds = new Set(
+          allDivisions.filter((d: any) => !d.timetableLocked).map((d: any) => d.id)
+        );
+
+        // Load existing entries for locked divisions (these will be preserved)
+        let lockedEntries: any[] = [];
+        if (lockedDivisionIds.size > 0) {
+          lockedEntries = await prisma.timetableEntry.findMany({
+            where: {
+              tenantId,
+              divisionId: { in: Array.from(lockedDivisionIds) },
+            },
+          });
+        }
+
+        // Build lockedSlots: teacher occupancy from locked divisions
+        // The solver must not place any variable on a slot already occupied by a locked teacher
+        const lockedSlots: { teacherId: string; day: number; slot: number }[] = [];
+        for (const entry of lockedEntries) {
+          lockedSlots.push({
+            teacherId: entry.teacherId,
+            day: entry.dayOfWeek,
+            slot: entry.slotNumber,
+          });
+        }
+
+        if (lockedDivisionIds.size > 0) {
+          emit({
+            phase: 'loading_data', pct: 16,
+            label: `${lockedDivisionIds.size} division(s) locked — their timetables will be preserved`,
+            detail: `${lockedEntries.length} locked entries creating ${lockedSlots.length} teacher-time constraints`,
+          });
+        }
+
         emit({
           phase: 'loading_data', pct: 15,
           label: `Loaded: ${subjects.length} subjects, ${classes.length} classes, ${teachers.length} teachers`,
@@ -415,6 +454,14 @@ export async function POST(req: NextRequest) {
           }
         }
 
+        // Filter out locked divisions — they won't be regenerated
+        const unlockedDivisionInputs = divisionInputs.filter(
+          di => !lockedDivisionIds.has(di.id)
+        );
+        const lockedDivisionInputsForReference = divisionInputs.filter(
+          di => lockedDivisionIds.has(di.id)
+        );
+
         // Construct default PE groups if none are provided
         if (peGroups.length === 0) {
           const peSub = subjects.find(s =>
@@ -578,7 +625,7 @@ export async function POST(req: NextRequest) {
         }
 
         const engineInput: TimetableInput = {
-          divisions: divisionInputs,
+          divisions: unlockedDivisionInputs,
           subjects: subjects.map(s => ({
             id: s.id, name: s.name, isCore: s.isCore,
             eveningPriority: s.eveningPriority, consecutiveSlots: s.consecutiveSlots,
@@ -598,9 +645,11 @@ export async function POST(req: NextRequest) {
           morningPeriods,
           // PE groups: tells solver to co-schedule these subjects across grouped divisions
           sharedSubjectIds: peGroupSubjectIds.size > 0 ? Array.from(peGroupSubjectIds) : undefined,
+          // Teacher slots occupied by locked divisions — solver must not place anything there
+          lockedSlots: lockedSlots.length > 0 ? lockedSlots : undefined,
         };
 
-        const totalExpectedSlots = divisionInputs.reduce(
+        const totalExpectedSlots = unlockedDivisionInputs.reduce(
           (sum, div) => sum + div.subjects.reduce((s, ds) => s + ds.periodsPerWeek, 0), 0
         );
 
@@ -860,8 +909,18 @@ export async function POST(req: NextRequest) {
           }
         }
 
-        emit({ phase: 'saving', pct: 93, label: `Saving ${expandedTimetable.length} new entries…` });
-        await prisma.timetableEntry.deleteMany({ where: { tenantId } });
+        emit({ phase: 'saving', pct: 93, label: `Saving ${expandedTimetable.length} new entries for ${unlockedDivisionIds.size} unlocked division(s)…` });
+
+        // Only delete entries for UNLOCKED divisions — locked divisions' entries are preserved
+        if (unlockedDivisionIds.size > 0) {
+          await prisma.timetableEntry.deleteMany({
+            where: {
+              tenantId,
+              divisionId: { in: Array.from(unlockedDivisionIds) },
+            },
+          });
+        }
+
         if (expandedTimetable.length > 0) {
           await prisma.timetableEntry.createMany({
             data: expandedTimetable.map((entry: any) => ({

@@ -29,8 +29,29 @@ To learn more about Next.js, take a look at the following resources:
 
 You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
 
-## Deploy on Vercel
+## Deploy on Vercel & Data Isolation
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+To deploy the application securely on Vercel and ensure production data isolation from local database credentials and files, follow these guidelines:
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+1. **Environment Variables**: Define production environment variables (like `DATABASE_URL` and NextAuth credentials) inside the Vercel project settings. The production database is entirely independent. Local `.env` and `.env.local` files are ignored via `.gitignore` and won't be pushed.
+2. **Database Migrations/Sync**:
+   - For database schema changes, run `npx prisma db push` locally or in CI to sync the database schema.
+   - The production database schema will be updated according to `prisma/schema.prisma` without overriding or losing existing production timetable records.
+3. **Data Protection**:
+   - Seed data (`prisma/seed.ts`) is meant for initial local development setup and is not executed automatically on build/deploy.
+   - Local helper/inspection scripts (e.g., `inspect_*.ts`), local credentials, and powershell scripts are explicitly added to `.gitignore` to prevent leaking any timetable records or security credentials to the repository.
+
+## New Timetable Features
+
+1. **Physical Education Constraint (Period 1 Avoidance)**:
+   - Built-in hard solver constraints in `src/lib/timetable-solver.ts` and fallback rules in `src/lib/timetable-engine.ts` guarantee that PE/evening-priority subjects are never scheduled in Period 1.
+2. **Per-Division Locking**:
+   - Admins can lock specific classes to preserve their timetables while regenerating others.
+   - The generation API endpoint (`/api/timetable/generate`) reads locked divisions, preserves their database entries, and feeds locked teacher-time slots into the solver as rigid constraints.
+3. **Manual Cell Editing**:
+   - Toggle "Edit Mode" on the timetable page.
+   - Click any cell in an unlocked division to change or unassign a subject and teacher.
+   - Real-time conflict validation checks if teachers are double-booked or if divisions are locked.
+   - Swap slot: click "Swap Slot", select another cell within the same class, and atomically exchange their contents.
+4. **Subject-Aware Substitution Suggestions**:
+   - Free substitute teachers on the Substitution page are ranked by relevance: Regular for this class > Subject Expert > Qualified > Others, displaying badges for each relevance level.

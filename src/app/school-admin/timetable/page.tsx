@@ -168,6 +168,137 @@ export default function TimetablePage() {
   const [teachers, setTeachers] = useState<any[]>([]);
   const [checkedTeachers, setCheckedTeachers] = useState<Record<string, boolean>>({});
 
+  // Edit Mode states
+  const [isEditMode, setIsEditMode] = useState(false);
+  const [selectedCell, setSelectedCell] = useState<{
+    divId: string;
+    day: number;
+    slot: number;
+    entry: any; // the timetable entry itself
+  } | null>(null);
+  const [isSwapping, setIsSwapping] = useState(false); // true when waiting for second cell selection
+  const [editSubjectId, setEditSubjectId] = useState('');
+  const [editTeacherId, setEditTeacherId] = useState('');
+  const [editConflicts, setEditConflicts] = useState<any[]>([]);
+  const [editValidating, setEditValidating] = useState(false);
+  const [editSaving, setEditSaving] = useState(false);
+
+  async function validateEdit(subjectId: string, teacherId: string) {
+    if (!selectedCell) return;
+    setEditValidating(true);
+    setEditConflicts([]);
+    try {
+      const payload: any = {
+        action: 'validate',
+        entries: [
+          {
+            id: selectedCell.entry?.id || undefined, // undefined for CREATE
+            divisionId: selectedCell.divId,
+            dayOfWeek: selectedCell.day,
+            slotNumber: selectedCell.slot,
+            subjectId: subjectId || null,
+            teacherId: teacherId || null,
+          }
+        ]
+      };
+      const res = await fetch('/api/timetable/edit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (data.success && data.results) {
+        setEditConflicts(data.results[0]?.conflicts || []);
+      }
+    } catch (err) {
+      console.error('Validation error:', err);
+    }
+    setEditValidating(false);
+  }
+
+  async function saveEdit() {
+    if (!selectedCell) return;
+    setEditSaving(true);
+    try {
+      const payload: any = {
+        action: 'apply',
+        entries: [
+          {
+            id: selectedCell.entry?.id || undefined, // undefined for CREATE
+            divisionId: selectedCell.divId,
+            dayOfWeek: selectedCell.day,
+            slotNumber: selectedCell.slot,
+            subjectId: editSubjectId || null,
+            teacherId: editTeacherId || null,
+          }
+        ]
+      };
+      const res = await fetch('/api/timetable/edit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (data.success) {
+        // If there were locked conflicts, it won't apply
+        const divisionLocked = data.results?.some((r: any) => r.conflicts.some((c: any) => c.type === 'division_locked'));
+        if (divisionLocked) {
+          alert('Failed: Division is locked.');
+        } else {
+          await fetchAll();
+          setSelectedCell(null);
+        }
+      } else {
+        alert(data.error || 'Failed to save changes.');
+      }
+    } catch (err) {
+      console.error('Error saving edit:', err);
+      alert('Network error saving changes.');
+    }
+    setEditSaving(false);
+  }
+
+  async function performSwap(day2: number, slot2: number) {
+    if (!selectedCell) return;
+    const entry2 = getEntry(selectedCell.divId, day2, slot2);
+    if (!selectedCell.entry || !entry2) {
+      alert('Both slots must contain entries to perform a swap.');
+      setIsSwapping(false);
+      setSelectedCell(null);
+      return;
+    }
+    
+    setEditSaving(true);
+    try {
+      const res = await fetch('/api/timetable/edit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'swap',
+          entryId1: selectedCell.entry.id,
+          entryId2: entry2.id,
+        })
+      });
+      const data = await res.json();
+      if (data.success) {
+        await fetchAll();
+      } else {
+        if (data.conflicts && data.conflicts.length > 0) {
+          const conflictMsgs = data.conflicts.map((c: any) => c.message).join('\n');
+          alert(`Could not swap slots due to conflicts:\n${conflictMsgs}`);
+        } else {
+          alert(data.error || 'Failed to swap slots.');
+        }
+      }
+    } catch (err) {
+      console.error('Error swapping:', err);
+      alert('Network error swapping slots.');
+    }
+    setIsSwapping(false);
+    setSelectedCell(null);
+    setEditSaving(false);
+  }
+
   useEffect(() => { fetchAll(); }, []);
 
   // Automatically check all divisions by default once classes load
@@ -453,12 +584,20 @@ export default function TimetablePage() {
     issueFilter === 'all' || i.type === issueFilter
   ) ?? [];
 
+  const lockedDivsCount = allDivisions.filter((d: any) => d.timetableLocked).length;
+  const unlockedDivsCount = allDivisions.length - lockedDivsCount;
+
   return (
     <DashboardLayout>
       <div className="page-header">
         <div>
           <h2>Timetable</h2>
           <p>Generate, view and manage weekly timetables</p>
+          {lockedDivsCount > 0 && (
+            <p style={{ margin: '4px 0 0 0', fontSize: '12.5px', color: '#dc2626', fontWeight: 600 }}>
+              🔒 {lockedDivsCount} division(s) locked ({allDivisions.filter((d: any) => d.timetableLocked).map((d: any) => d.label).join(', ')}). Only the other {unlockedDivsCount} division(s) will be regenerated.
+            </p>
+          )}
         </div>
         <div className="page-header-actions">
           {entries.length > 0 && (
@@ -469,6 +608,19 @@ export default function TimetablePage() {
               id="btn-analyze-timetable"
             >
               {analyzing ? '⏳' : '🔍'} Analyze
+            </button>
+          )}
+          {entries.length > 0 && !locked && (
+            <button
+              className={`btn ${isEditMode ? 'btn-primary' : 'btn-secondary'}`}
+              onClick={() => {
+                setIsEditMode(!isEditMode);
+                setSelectedCell(null);
+                setIsSwapping(false);
+              }}
+              id="btn-edit-mode"
+            >
+              {isEditMode ? '✍️ Editing Mode' : '✏️ Edit Mode'}
             </button>
           )}
           <button
@@ -484,7 +636,7 @@ export default function TimetablePage() {
             disabled={generating}
             id="btn-generate-timetable"
           >
-            {generating ? '⏳ Generating...' : '🔄 Generate'}
+            {generating ? '⏳ Generating...' : (lockedDivsCount > 0 ? '🔄 Regenerate Unlocked' : '🔄 Generate')}
           </button>
           <button className="btn btn-secondary" onClick={() => window.print()} id="btn-print-timetable">
             🖨️ Print
@@ -921,6 +1073,108 @@ export default function TimetablePage() {
               </div>
             )}
 
+            {/* Division Locks Control Box */}
+            {selectedDivision === '' && allDivisions.length > 0 && (
+              <div className="no-print" style={{ 
+                marginBottom: 20, 
+                background: 'var(--bg-card, #ffffff)', 
+                padding: '16px', 
+                borderRadius: 'var(--radius-lg, 12px)', 
+                border: '1px solid var(--border-color, #e2e8f0)',
+                boxShadow: 'var(--shadow-sm, 0 1px 2px 0 rgba(0, 0, 0, 0.05))'
+              }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                  <span style={{ fontWeight: 600, fontSize: '13.5px', color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <span>🔒</span> Division Timetable Locks (Regeneration Protection):
+                  </span>
+                  <div style={{ display: 'flex', gap: 10 }}>
+                    <button 
+                      type="button" 
+                      className="btn btn-ghost btn-sm" 
+                      style={{ fontSize: '11px', padding: '2px 8px' }}
+                      onClick={async () => {
+                        const updates = allDivisions.map((d: any) => ({ divisionId: d.id, locked: true }));
+                        setClasses(prev => prev.map(c => ({
+                          ...c,
+                          divisions: c.divisions.map((d: any) => ({ ...d, timetableLocked: true }))
+                        })));
+                        await fetch('/api/timetable/division-lock', {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ divisions: updates })
+                        });
+                      }}
+                    >
+                      Lock All
+                    </button>
+                    <button 
+                      type="button" 
+                      className="btn btn-ghost btn-sm" 
+                      style={{ fontSize: '11px', padding: '2px 8px' }}
+                      onClick={async () => {
+                        const updates = allDivisions.map((d: any) => ({ divisionId: d.id, locked: false }));
+                        setClasses(prev => prev.map(c => ({
+                          ...c,
+                          divisions: c.divisions.map((d: any) => ({ ...d, timetableLocked: false }))
+                        })));
+                        await fetch('/api/timetable/division-lock', {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ divisions: updates })
+                        });
+                      }}
+                    >
+                      Unlock All
+                    </button>
+                  </div>
+                </div>
+                <div style={{ display: 'flex', gap: '8px 16px', flexWrap: 'wrap' }}>
+                  {allDivisions.map((d: any) => {
+                    const isLocked = !!d.timetableLocked;
+                    return (
+                      <button
+                        key={d.id}
+                        type="button"
+                        onClick={async () => {
+                          const newStatus = !isLocked;
+                          setClasses(prev => prev.map(c => ({
+                            ...c,
+                            divisions: c.divisions.map((div: any) => div.id === d.id ? { ...div, timetableLocked: newStatus } : div)
+                          })));
+                          
+                          await fetch('/api/timetable/division-lock', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                              divisions: [{ divisionId: d.id, locked: newStatus }]
+                            })
+                          });
+                        }}
+                        style={{ 
+                          display: 'inline-flex', 
+                          alignItems: 'center', 
+                          gap: 8, 
+                          fontSize: '13px', 
+                          fontWeight: 500,
+                          cursor: 'pointer', 
+                          userSelect: 'none',
+                          padding: '6px 12px',
+                          borderRadius: '6px',
+                          background: isLocked ? '#fef2f2' : 'var(--gray-50, #f8fafc)',
+                          border: `1px solid ${isLocked ? '#fca5a5' : 'var(--border-color, #e2e8f0)'}`,
+                          color: isLocked ? '#dc2626' : 'var(--gray-600, #475569)',
+                          transition: 'all 0.15s ease'
+                        }}
+                      >
+                        <span>{isLocked ? '🔒' : '🔓'}</span>
+                        Class {d.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
             {entries.length === 0 ? (
               <EmptyState />
             ) : (
@@ -930,22 +1184,81 @@ export default function TimetablePage() {
               ).filter(Boolean)
                .filter((div: any) => selectedDivision !== '' || checkedDivisions[div.id] !== false)
                .map((div: any) => (
-                <div key={div.id} className="card tt-print-card" style={{ marginBottom: 16 }}>
-                  <div className="card-header">
-                    <h3>Class {div.label}</h3>
-                    <span className="badge badge-green">{div.className}</span>
-                  </div>
-                  <div className="card-body" style={{ padding: '0', overflowX: 'auto' }}>
-                    {/* Inverted table: Days as rows, Periods as columns */}
-                    <InvertedTimetableGrid
-                      div={div}
-                      days={days}
-                      slots={slots}
-                      getEntry={getEntry}
-                      entries={entries}
-                    />
-                  </div>
-                </div>
+                 <div 
+                   key={div.id} 
+                   className="card tt-print-card" 
+                   style={{ 
+                     marginBottom: 16,
+                     borderLeft: div.timetableLocked ? '4px solid #ef4444' : undefined,
+                     opacity: div.timetableLocked ? 0.98 : 1
+                   }}
+                 >
+                   <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                     <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                       <h3>Class {div.label}</h3>
+                       <span className="badge badge-green">{div.className}</span>
+                       {div.timetableLocked && (
+                         <span 
+                           style={{ 
+                             fontSize: '11px', 
+                             background: '#fef2f2', 
+                             color: '#dc2626', 
+                             padding: '2px 8px', 
+                             borderRadius: '4px', 
+                             fontWeight: 600,
+                             border: '1px solid #fca5a5',
+                             display: 'inline-flex',
+                             alignItems: 'center',
+                             gap: 4
+                           }}
+                         >
+                           🔒 Protected from Regeneration
+                         </span>
+                       )}
+                     </div>
+                     <button
+                       type="button"
+                       className="btn btn-ghost btn-sm no-print"
+                       style={{ fontSize: '12px', padding: '4px 8px', color: div.timetableLocked ? '#dc2626' : 'var(--gray-500)' }}
+                       onClick={async () => {
+                         const newStatus = !div.timetableLocked;
+                         setClasses(prev => prev.map(c => ({
+                           ...c,
+                           divisions: c.divisions.map((d: any) => d.id === div.id ? { ...d, timetableLocked: newStatus } : d)
+                         })));
+                         await fetch('/api/timetable/division-lock', {
+                           method: 'POST',
+                           headers: { 'Content-Type': 'application/json' },
+                           body: JSON.stringify({
+                             divisions: [{ divisionId: div.id, locked: newStatus }]
+                           })
+                         });
+                       }}
+                     >
+                       {div.timetableLocked ? '🔓 Unlock Class' : '🔒 Lock Class'}
+                     </button>
+                   </div>
+                   <div className="card-body" style={{ padding: '0', overflowX: 'auto' }}>
+                     {/* Inverted table: Days as rows, Periods as columns */}
+                     <InvertedTimetableGrid
+                       div={div}
+                       days={days}
+                       slots={slots}
+                       getEntry={getEntry}
+                       entries={entries}
+                       isEditMode={isEditMode}
+                       selectedCell={selectedCell}
+                       isSwapping={isSwapping}
+                       onCellClick={(divId, day, slot, entry) => {
+                         setSelectedCell({ divId, day, slot, entry });
+                         setEditSubjectId(entry?.subjectId || '');
+                         setEditTeacherId(entry?.teacherId || '');
+                         setEditConflicts([]);
+                       }}
+                       performSwap={performSwap}
+                     />
+                   </div>
+                 </div>
               ))
             )}
           </>
@@ -1968,6 +2281,160 @@ export default function TimetablePage() {
         </div>
       )}
 
+      {/* Swap Mode Banner */}
+      {isSwapping && selectedCell && (
+        <div className="no-print" style={{
+          position: 'fixed',
+          bottom: 24,
+          left: '50%',
+          transform: 'translateX(-50%)',
+          background: 'linear-gradient(90deg, var(--primary-600), var(--primary-500))',
+          color: '#fff',
+          padding: '14px 24px',
+          borderRadius: 12,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 16,
+          boxShadow: '0 10px 25px -5px rgba(0, 0, 0, 0.3)',
+          zIndex: 1000,
+          whiteSpace: 'nowrap',
+        }}>
+          <span style={{ fontSize: 18 }}>🔄</span>
+          <div>
+            Select another slot in <strong>Class {allDivisions.find((d: any) => d.id === selectedCell.divId)?.label}</strong> to swap with <strong>{getDayName(selectedCell.day)} Period {selectedCell.slot}</strong>
+          </div>
+          <button
+            className="btn btn-sm"
+            style={{ background: 'rgba(255,255,255,0.2)', color: '#fff', border: 'none', padding: '4px 10px', fontSize: 11 }}
+            onClick={() => {
+              setIsSwapping(false);
+              setSelectedCell(null);
+            }}
+          >
+            Cancel
+          </button>
+        </div>
+      )}
+
+      {/* Manual Slot Edit Modal */}
+      {selectedCell && !isSwapping && (
+        <div className="modal-overlay" onClick={() => setSelectedCell(null)}>
+          <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 460 }}>
+            <div className="modal-header">
+              <h3>✍️ Edit Timetable Slot</h3>
+              <button className="btn btn-ghost btn-icon" onClick={() => setSelectedCell(null)}>✕</button>
+            </div>
+            <div className="modal-body">
+              <div style={{ marginBottom: 16, padding: '10px 14px', background: 'var(--surface-bg, #f8f9fc)', borderRadius: 8, border: '1px solid var(--border-color)' }}>
+                <div style={{ fontSize: 11, color: 'var(--gray-500)', textTransform: 'uppercase', fontWeight: 600 }}>Class & Day:</div>
+                <div style={{ fontWeight: 700, fontSize: 15, color: 'var(--text-primary)', marginTop: 2 }}>
+                  Class {allDivisions.find((d: any) => d.id === selectedCell.divId)?.label || ''} · {getDayName(selectedCell.day)} Period {selectedCell.slot}
+                </div>
+              </div>
+
+              <div className="form-group" style={{ marginBottom: 16 }}>
+                <label className="form-label">Subject</label>
+                <select
+                  className="form-select"
+                  value={editSubjectId}
+                  onChange={e => {
+                    const subId = e.target.value;
+                    setEditSubjectId(subId);
+                    if (!subId) {
+                      setEditTeacherId('');
+                      setEditConflicts([]);
+                    } else {
+                      const mappedTeacher = teachers.find(t => t.subjectMappings?.some((sm: any) => sm.subjectId === subId));
+                      const nextTeacherId = editTeacherId || mappedTeacher?.id || '';
+                      if (mappedTeacher && !editTeacherId) {
+                        setEditTeacherId(mappedTeacher.id);
+                      }
+                      validateEdit(subId, nextTeacherId);
+                    }
+                  }}
+                  id="edit-subject-select"
+                >
+                  <option value="">— Unassigned / Free Period —</option>
+                  {subjects.map((sub: any) => (
+                    <option key={sub.id} value={sub.id}>{sub.name} ({sub.code})</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="form-group" style={{ marginBottom: 16 }}>
+                <label className="form-label">Teacher</label>
+                <select
+                  className="form-select"
+                  value={editTeacherId}
+                  disabled={!editSubjectId}
+                  onChange={e => {
+                    const tId = e.target.value;
+                    setEditTeacherId(tId);
+                    validateEdit(editSubjectId, tId);
+                  }}
+                  id="edit-teacher-select"
+                >
+                  <option value="">— Select Teacher —</option>
+                  {teachers
+                    .filter((t: any) => !editSubjectId || t.subjectMappings?.some((sm: any) => sm.subjectId === editSubjectId))
+                    .map((t: any) => (
+                      <option key={t.id} value={t.id}>{t.user?.name || t.teacherCode} ({t.teacherCode})</option>
+                    ))}
+                </select>
+              </div>
+
+              {editValidating && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--gray-500)', margin: '12px 0' }}>
+                  <span className="spinner-sm" style={{ borderTopColor: 'var(--primary-color)' }} />
+                  Checking for schedule conflicts...
+                </div>
+              )}
+
+              {!editValidating && editConflicts.length > 0 && (
+                <div style={{ padding: '10px 14px', borderRadius: 8, background: '#fef2f2', border: '1px solid #fca5a5', margin: '12px 0' }}>
+                  <div style={{ fontWeight: 700, color: '#dc2626', fontSize: 13, marginBottom: 4 }}>⚠️ Scheduling Warnings:</div>
+                  {editConflicts.map((c, idx) => (
+                    <div key={idx} style={{ fontSize: 12, color: '#b91c1c', marginTop: 2 }}>
+                      • {c.message}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {!editValidating && editSubjectId && editTeacherId && editConflicts.length === 0 && (
+                <div style={{ color: '#16a34a', fontSize: 12.5, fontWeight: 500, margin: '12px 0', display: 'flex', alignItems: 'center', gap: 4 }}>
+                  <span>✓</span> No conflicts detected. Safe to save.
+                </div>
+              )}
+            </div>
+            <div className="modal-footer" style={{ display: 'flex', justifyContent: 'space-between' }}>
+              {selectedCell.entry ? (
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  style={{ background: 'rgba(124,58,237,.06)', color: 'var(--primary-600)', borderColor: 'rgba(124,58,237,.2)' }}
+                  onClick={() => setIsSwapping(true)}
+                  id="btn-trigger-swap"
+                >
+                  🔄 Swap Slot
+                </button>
+              ) : <div />}
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button type="button" className="btn btn-secondary" onClick={() => setSelectedCell(null)}>Cancel</button>
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={saveEdit}
+                  disabled={editSaving || editValidating || (editConflicts.length > 0 && editConflicts.some(c => c.type === 'division_locked'))}
+                >
+                  {editSaving ? 'Saving...' : 'Save Changes'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       <style>{timetableStyles}</style>
     </DashboardLayout>
   );
@@ -1999,12 +2466,28 @@ function buildParallelCell(entry: any, divisionId: string, day: number, slot: nu
   return { codes, teacherCodes };
 }
 
-function InvertedTimetableGrid({ div, days, slots, getEntry, entries }: {
+function InvertedTimetableGrid({
+  div,
+  days,
+  slots,
+  getEntry,
+  entries,
+  isEditMode,
+  selectedCell,
+  isSwapping,
+  onCellClick,
+  performSwap,
+}: {
   div: any;
   days: number[];
   slots: number[];
   getEntry: (divId: string, day: number, slot: number) => any;
   entries: any[];
+  isEditMode: boolean;
+  selectedCell: any;
+  isSwapping: boolean;
+  onCellClick: (divId: string, day: number, slot: number, entry: any) => void;
+  performSwap: (day: number, slot: number) => void;
 }) {
   const [isMobile, setIsMobile] = useState(false);
   const [activeDay, setActiveDay] = useState(1);
@@ -2112,8 +2595,29 @@ function InvertedTimetableGrid({ div, days, slots, getEntry, entries }: {
               {morningSlots.map(slot => {
                 const entry = getEntry(div.id, day, slot);
                 const parallel = buildParallelCell(entry, div.id, day, slot, entries);
+                
+                const isClickable = isEditMode && !div.timetableLocked;
+                const isOrigin = selectedCell && selectedCell.divId === div.id && selectedCell.day === day && selectedCell.slot === slot;
+                const isTarget = isSwapping && selectedCell && selectedCell.divId === div.id && !isOrigin;
+
+                let cellClass = `tt-entry-cell ${entry ? 'filled' : 'empty'}`;
+                if (isClickable) cellClass += ' tt-editable-cell';
+                if (isOrigin) cellClass += ' tt-swapping-origin';
+                if (isTarget) cellClass += ' tt-swapping-target';
+
                 return (
-                  <td key={slot} className={`tt-entry-cell ${entry ? 'filled' : 'empty'}`}>
+                  <td 
+                    key={slot} 
+                    className={cellClass}
+                    onClick={() => {
+                      if (!isClickable) return;
+                      if (isSwapping) {
+                        performSwap(day, slot);
+                      } else {
+                        onCellClick(div.id, day, slot, entry);
+                      }
+                    }}
+                  >
                     {entry ? (
                       parallel ? (
                         <div className="tt-entry-content tt-parallel-cell">
@@ -2138,8 +2642,29 @@ function InvertedTimetableGrid({ div, days, slots, getEntry, entries }: {
               {afternoonSlots.map(slot => {
                 const entry = getEntry(div.id, day, slot);
                 const parallel = buildParallelCell(entry, div.id, day, slot, entries);
+                
+                const isClickable = isEditMode && !div.timetableLocked;
+                const isOrigin = selectedCell && selectedCell.divId === div.id && selectedCell.day === day && selectedCell.slot === slot;
+                const isTarget = isSwapping && selectedCell && selectedCell.divId === div.id && !isOrigin;
+
+                let cellClass = `tt-entry-cell tt-pm ${entry ? 'filled' : 'empty'}`;
+                if (isClickable) cellClass += ' tt-editable-cell';
+                if (isOrigin) cellClass += ' tt-swapping-origin';
+                if (isTarget) cellClass += ' tt-swapping-target';
+
                 return (
-                  <td key={slot} className={`tt-entry-cell tt-pm ${entry ? 'filled' : 'empty'}`}>
+                  <td 
+                    key={slot} 
+                    className={cellClass}
+                    onClick={() => {
+                      if (!isClickable) return;
+                      if (isSwapping) {
+                        performSwap(day, slot);
+                      } else {
+                        onCellClick(div.id, day, slot, entry);
+                      }
+                    }}
+                  >
                     {entry ? (
                       parallel ? (
                         <div className="tt-entry-content tt-parallel-cell">

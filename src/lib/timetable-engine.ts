@@ -28,6 +28,8 @@ export interface TimetableInput {
   morningPeriods: number; // periods before lunch, e.g. 4
   // PE-group shared subjects: treated as co-scheduled base subjects during solving
   sharedSubjectIds?: string[];
+  // Teacher slots occupied by locked divisions — solver must not place anything there
+  lockedSlots?: { teacherId: string; day: number; slot: number }[];
 }
 
 export interface DivisionInput {
@@ -312,6 +314,7 @@ export function generateTimetable(input: TimetableInput, activeConstraints: stri
 
     if (assignment.eveningPriority && enableEveningPriority) {
       for (let s = morningPeriods + 1; s <= slotsPerDay; s++) preferredSlots.push(s);
+      // Slot 1 is excluded — evening-priority subjects (PE, Art, etc.) must never be in Period 1
       for (let s = 2; s <= morningPeriods; s++) fallbackSlots.push(s);
     } else if (assignment.isCore && enableCoreMorning) {
       for (let s = 2; s <= morningPeriods; s++) preferredSlots.push(s);

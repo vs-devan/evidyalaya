@@ -151,7 +151,15 @@ export default function SubstitutePage() {
     return Math.max(0, teachingSlots.length - busySlots.size);
   }
 
-  function getFreeTeachers(slot: number, divisionId: string, absentTeacherId: string) {
+  /**
+   * Returns free teachers ranked by relevance to the subject/class being substituted.
+   * Relevance tiers:
+   *   'regular'   — teaches this subject in this specific class (on regular timetable)
+   *   'expert'    — teaches this subject in other classes
+   *   'qualified' — has subject mapping but no timetable entries for it
+   *   ''          — no relation to this subject
+   */
+  function getFreeTeachers(slot: number, divisionId: string, absentTeacherId: string, subjectId?: string) {
     const dayOfWeek = new Date(date).getDay() || 7;
     const busyTeacherIds = new Set<string>();
 
@@ -181,7 +189,45 @@ export default function SubstitutePage() {
     // All absent teachers are unavailable
     allAbsentTeacherIds.forEach(id => busyTeacherIds.add(id));
 
-    return teachers.filter((t: any) => !busyTeacherIds.has(t.id));
+    const free = teachers.filter((t: any) => !busyTeacherIds.has(t.id));
+
+    // Compute relevance for each free teacher
+    return free.map((t: any) => {
+      const teacherSubjectIds = (t.subjectMappings || []).map((sm: any) => sm.subjectId);
+      let relevance: 'regular' | 'expert' | 'qualified' | '' = '';
+      let relevanceDetail = '';
+
+      if (subjectId) {
+        // Check if this teacher regularly teaches this subject in this specific class
+        const teachesInThisClass = timetable.some((e: any) =>
+          e.teacherId === t.id && e.subjectId === subjectId && e.divisionId === divisionId
+        );
+        if (teachesInThisClass) {
+          relevance = 'regular';
+          relevanceDetail = 'Regular for this class';
+        } else {
+          // Check if this teacher teaches this subject in any other class
+          const teachesElsewhere = timetable.find((e: any) =>
+            e.teacherId === t.id && e.subjectId === subjectId && e.divisionId !== divisionId
+          );
+          if (teachesElsewhere) {
+            const divLabel = teachesElsewhere.division
+              ? `${teachesElsewhere.division?.class?.name || ''}${teachesElsewhere.division?.name || ''}`
+              : '';
+            relevance = 'expert';
+            relevanceDetail = divLabel ? `Teaches in ${divLabel}` : 'Teaches elsewhere';
+          } else if (teacherSubjectIds.includes(subjectId)) {
+            relevance = 'qualified';
+            relevanceDetail = 'Qualified';
+          }
+        }
+      }
+
+      return { ...t, relevance, relevanceDetail };
+    }).sort((a: any, b: any) => {
+      const order = { regular: 0, expert: 1, qualified: 2, '': 3 };
+      return (order[a.relevance as keyof typeof order] ?? 3) - (order[b.relevance as keyof typeof order] ?? 3);
+    });
   }
 
   async function saveSubstitutes() {
@@ -257,7 +303,7 @@ export default function SubstitutePage() {
           {saveMsg && (
             <span style={{ fontSize: 13, color: 'var(--success)', alignSelf: 'center', fontWeight: 600 }}>{saveMsg}</span>
           )}
-          <button className="btn btn-secondary" onClick={() => window.print()}>🖨️ Print</button>
+          <button className="btn btn-secondary" onClick={() => window.print()}>Print</button>
         </div>
       </div>
 
@@ -336,7 +382,7 @@ export default function SubstitutePage() {
             {/* Summary bar */}
             {totalAffected > 0 && (
               <div className="sub-summary-bar">
-                <span>📋 <strong>{totalAffected}</strong> affected period{totalAffected !== 1 ? 's' : ''} across <strong>{absentEntries.length}</strong> absent teacher{absentEntries.length !== 1 ? 's' : ''}</span>
+                <span><strong>{totalAffected}</strong> affected period{totalAffected !== 1 ? 's' : ''} across <strong>{absentEntries.length}</strong> absent teacher{absentEntries.length !== 1 ? 's' : ''}</span>
                 <span className={`sub-assign-pill ${totalAssigned === totalAffected ? 'done' : ''}`}>
                   {totalAssigned}/{totalAffected} assigned
                 </span>
@@ -347,7 +393,6 @@ export default function SubstitutePage() {
               <div key={entry.teacherId} className="card" style={{ marginBottom: 16 }}>
                 <div className="card-header">
                   <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                    <span style={{ fontSize: 20 }}>🏫</span>
                     <div>
                       <h3 style={{ margin: 0 }}>{getTeacherName(entry.teacherId)}</h3>
                       <span style={{ fontSize: 12, color: 'var(--gray-500)' }}>
@@ -379,7 +424,10 @@ export default function SubstitutePage() {
                       <tbody>
                         {entry.affectedSlots.map((slot: any) => {
                           const key = `${entry.teacherId}_${slot.slotNumber}_${slot.divisionId}`;
-                          const freeTeachers = getFreeTeachers(slot.slotNumber, slot.divisionId, entry.teacherId);
+                          const freeTeachers = getFreeTeachers(slot.slotNumber, slot.divisionId, entry.teacherId, slot.subject?.id);
+                          const regularCount = freeTeachers.filter((t: any) => t.relevance === 'regular').length;
+                          const expertCount = freeTeachers.filter((t: any) => t.relevance === 'expert').length;
+                          const qualifiedCount = freeTeachers.filter((t: any) => t.relevance === 'qualified').length;
                           return (
                             <tr key={key}>
                               <td>
@@ -392,21 +440,27 @@ export default function SubstitutePage() {
                               <td>
                                 <select
                                   className="form-select"
-                                  style={{ minWidth: 200 }}
+                                  style={{ minWidth: 280 }}
                                   value={assignments[key] || ''}
                                   onChange={e => setAssignments({ ...assignments, [key]: e.target.value })}
                                 >
                                   <option value="">Select substitute...</option>
                                   {freeTeachers.map((t: any) => {
                                     const freeCount = getFreePeriodsCount(t.id, key);
+                                    const tag = t.relevanceDetail ? ` — ${t.relevanceDetail}` : '';
                                     return (
                                       <option key={t.id} value={t.id}>
-                                        {t.teacherCode} – {t.user?.name} ({freeCount} free)
+                                        {t.teacherCode} – {t.user?.name} ({freeCount} free){tag}
                                       </option>
                                     );
                                   })}
                                 </select>
-                                <span className="form-hint">{freeTeachers.length} available</span>
+                                <div className="sub-relevance-hints">
+                                  <span className="form-hint">{freeTeachers.length} available</span>
+                                  {regularCount > 0 && <span className="sub-rel-tag regular">{regularCount} regular</span>}
+                                  {expertCount > 0 && <span className="sub-rel-tag expert">{expertCount} subject expert{expertCount !== 1 ? 's' : ''}</span>}
+                                  {qualifiedCount > 0 && <span className="sub-rel-tag qualified">{qualifiedCount} qualified</span>}
+                                </div>
                               </td>
                             </tr>
                           );
@@ -427,7 +481,7 @@ export default function SubstitutePage() {
                   onClick={saveSubstitutes}
                   disabled={saving || totalAssigned === 0}
                 >
-                  {saving ? '⏳ Saving...' : `💾 Save ${totalAssigned} Substitution${totalAssigned !== 1 ? 's' : ''}`}
+                   {saving ? 'Saving...' : `Save ${totalAssigned} Substitution${totalAssigned !== 1 ? 's' : ''}`}
                 </button>
               </div>
             )}
@@ -438,7 +492,7 @@ export default function SubstitutePage() {
         {subs.length > 0 && (
           <div className="card">
             <div className="card-header">
-              <h3>📋 {date === new Date().toISOString().split('T')[0] ? "Today's" : `${date}`} Substitutions</h3>
+               <h3>{date === new Date().toISOString().split('T')[0] ? "Today's" : `${date}`} Substitutions</h3>
               <span className="badge badge-blue">{subs.length} total</span>
             </div>
 
@@ -578,5 +632,37 @@ const substituteStyles = `
   .sub-form-row { flex-direction: column; }
   .sub-form-row .form-group { width: 100%; }
   .sub-summary-bar { flex-direction: column; align-items: flex-start; gap: 8px; }
+}
+
+/* Relevance hints row below substitute dropdown */
+.sub-relevance-hints {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin-top: 4px;
+  flex-wrap: wrap;
+}
+.sub-rel-tag {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 7px;
+  border-radius: 999px;
+  letter-spacing: 0.02em;
+}
+.sub-rel-tag.regular {
+  background: #dcfce7;
+  color: #166534;
+  border: 1px solid #bbf7d0;
+}
+.sub-rel-tag.expert {
+  background: #dbeafe;
+  color: #1e40af;
+  border: 1px solid #bfdbfe;
+}
+.sub-rel-tag.qualified {
+  background: #fef3c7;
+  color: #92400e;
+  border: 1px solid #fde68a;
 }
 `;
