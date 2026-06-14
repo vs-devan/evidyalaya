@@ -30,6 +30,8 @@ export interface TimetableInput {
   sharedSubjectIds?: string[];
   // Teacher slots occupied by locked divisions — solver must not place anything there
   lockedSlots?: { teacherId: string; day: number; slot: number }[];
+  // Venue group slots occupied by locked divisions — solver must not schedule same venue
+  lockedVenueSlots?: { venueGroupId: string; day: number; slot: number }[];
 }
 
 export interface DivisionInput {

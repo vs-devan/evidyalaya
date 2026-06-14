@@ -186,25 +186,52 @@ export async function POST(req: NextRequest) {
               tenantId,
               divisionId: { in: Array.from(lockedDivisionIds) },
             },
+            include: {
+              subject: { select: { sharedVenueGroupId: true } },
+            },
           });
         }
 
         // Build lockedSlots: teacher occupancy from locked divisions
         // The solver must not place any variable on a slot already occupied by a locked teacher
         const lockedSlots: { teacherId: string; day: number; slot: number }[] = [];
+        // Build lockedVenueSlots: shared venue groups from locked divisions
+        // The solver must not schedule same venue group at the same (day, slot)
+        const lockedVenueSlots: { venueGroupId: string; day: number; slot: number }[] = [];
+        const seenLockedTeacherSlots = new Set<string>();
+        const seenLockedVenueSlots = new Set<string>();
+
         for (const entry of lockedEntries) {
-          lockedSlots.push({
-            teacherId: entry.teacherId,
-            day: entry.dayOfWeek,
-            slot: entry.slotNumber,
-          });
+          const tKey = `${entry.teacherId}:${entry.dayOfWeek}:${entry.slotNumber}`;
+          if (!seenLockedTeacherSlots.has(tKey)) {
+            seenLockedTeacherSlots.add(tKey);
+            lockedSlots.push({
+              teacherId: entry.teacherId,
+              day: entry.dayOfWeek,
+              slot: entry.slotNumber,
+            });
+          }
+
+          // Capture venue occupancy from locked entries
+          const venueGroupId = entry.subject?.sharedVenueGroupId;
+          if (venueGroupId) {
+            const vKey = `${venueGroupId}:${entry.dayOfWeek}:${entry.slotNumber}`;
+            if (!seenLockedVenueSlots.has(vKey)) {
+              seenLockedVenueSlots.add(vKey);
+              lockedVenueSlots.push({
+                venueGroupId,
+                day: entry.dayOfWeek,
+                slot: entry.slotNumber,
+              });
+            }
+          }
         }
 
         if (lockedDivisionIds.size > 0) {
           emit({
             phase: 'loading_data', pct: 16,
             label: `${lockedDivisionIds.size} division(s) locked — their timetables will be preserved`,
-            detail: `${lockedEntries.length} locked entries creating ${lockedSlots.length} teacher-time constraints`,
+            detail: `${lockedEntries.length} locked entries → ${lockedSlots.length} teacher-time + ${lockedVenueSlots.length} venue constraints`,
           });
         }
 
@@ -647,6 +674,8 @@ export async function POST(req: NextRequest) {
           sharedSubjectIds: peGroupSubjectIds.size > 0 ? Array.from(peGroupSubjectIds) : undefined,
           // Teacher slots occupied by locked divisions — solver must not place anything there
           lockedSlots: lockedSlots.length > 0 ? lockedSlots : undefined,
+          // Venue group slots occupied by locked divisions — solver must not schedule same venue
+          lockedVenueSlots: lockedVenueSlots.length > 0 ? lockedVenueSlots : undefined,
         };
 
         const totalExpectedSlots = unlockedDivisionInputs.reduce(
@@ -728,6 +757,19 @@ export async function POST(req: NextRequest) {
                 finalTimetable.map(e => `${e.divisionId}:${e.dayOfWeek}:${e.slotNumber}`)
               );
               const teacherOccupied = new Set<string>();
+              const venueOccupied = new Set<string>();
+
+              // IMPORTANT: Include locked entries in occupancy tracking
+              // so AI repair never schedules on top of locked divisions
+              for (const le of lockedEntries) {
+                occupied.add(`${le.divisionId}:${le.dayOfWeek}:${le.slotNumber}`);
+                teacherOccupied.add(`${le.teacherId}:${le.dayOfWeek}:${le.slotNumber}`);
+                const leVenue = le.subject?.sharedVenueGroupId;
+                if (leVenue) {
+                  venueOccupied.add(`${leVenue}:${le.dayOfWeek}:${le.slotNumber}`);
+                }
+              }
+
               for (const e of finalTimetable) {
                 teacherOccupied.add(`${e.teacherId}:${e.dayOfWeek}:${e.slotNumber}`);
                 const divName = divisionNames.get(e.divisionId) ?? '';
@@ -736,6 +778,11 @@ export async function POST(req: NextRequest) {
                   for (const vtId of varTeachers) {
                     teacherOccupied.add(`${vtId}:${e.dayOfWeek}:${e.slotNumber}`);
                   }
+                }
+                // Track venue occupancy from solver output
+                const solverSub = subjects.find(s => s.id === e.subjectId);
+                if (solverSub?.sharedVenueGroupId) {
+                  venueOccupied.add(`${solverSub.sharedVenueGroupId}:${e.dayOfWeek}:${e.slotNumber}`);
                 }
               }
 
@@ -765,6 +812,11 @@ export async function POST(req: NextRequest) {
                 if (slot.slotNumber < 1 || slot.slotNumber > engineInput.slotsPerDay) continue;
                 if (exclusionSet.has(`${slot.divisionId}:${slot.subjectId}`)) continue;
                 if (!isTeacherAllowed(slot.teacherId, slot.subjectId, slot.divisionId)) continue;
+
+                // Check venue conflict for this slot's subject
+                const slotSub = subjects.find(s => s.id === slot.subjectId);
+                const slotVenue = slotSub?.sharedVenueGroupId;
+                if (slotVenue && venueOccupied.has(`${slotVenue}:${slot.dayOfWeek}:${slot.slotNumber}`)) continue;
 
                 // Check co-scheduling if it's a base subject in a co-scheduled division
                 const isBase = baseSubjectIds.has(slot.subjectId);
@@ -816,6 +868,10 @@ export async function POST(req: NextRequest) {
                       teacherOccupied.add(`${vtId}:${slot.dayOfWeek}:${slot.slotNumber}`);
                     }
                   }
+                  // Track venue for placed co-scheduled entries
+                  if (slotVenue) {
+                    venueOccupied.add(`${slotVenue}:${slot.dayOfWeek}:${slot.slotNumber}`);
+                  }
                   addedCount += coGroup.length;
                 } else {
                   // Standard single entry scheduling
@@ -846,6 +902,10 @@ export async function POST(req: NextRequest) {
                   teacherOccupied.add(tKey);
                   for (const vtId of varTeachers) {
                     teacherOccupied.add(`${vtId}:${slot.dayOfWeek}:${slot.slotNumber}`);
+                  }
+                  // Track venue for placed single entry
+                  if (slotVenue) {
+                    venueOccupied.add(`${slotVenue}:${slot.dayOfWeek}:${slot.slotNumber}`);
                   }
                   addedCount++;
                 }

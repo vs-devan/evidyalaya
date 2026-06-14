@@ -53,6 +53,7 @@ export interface ScoreBreakdown {
   teacherBalance: number;
   classTeacherP1: number;
   consecutiveCompliance: number;
+  teacherDailyConsistency: number;
 }
 
 export interface SolverResult extends GenerationResult {
@@ -103,15 +104,16 @@ const SA_REHEAT_STALL   = 8_000;   // reheat if no improvement for N iterations
 const SA_REHEAT_FACTOR  = 4;       // multiply temp by this on reheat
 
 // Score weights (must sum to 100)
-const W_FILL            = 35;
-const W_DAY_UNIQUE      = 10;
-const W_WEEK_SPREAD     =  6;
+const W_FILL            = 33;
+const W_DAY_UNIQUE      =  9;
+const W_WEEK_SPREAD     =  5;
 const W_CORE_MORNING    =  7;
 const W_EVENING         =  4;
-const W_TEACHER_BAL     =  8;
-const W_CT_P1           = 18;  // ← heavily boosted: CT must own Period 1
+const W_TEACHER_BAL     =  6;
+const W_CT_P1           = 16;  // ← heavily boosted: CT must own Period 1
 const W_CONSECUTIVE     =  4;
-const W_NO_TEACHER_HAT  =  8;  // penalise same teacher 3+ consecutive slots
+const W_NO_TEACHER_HAT  =  6;  // penalise same teacher 3+ consecutive slots
+const W_TEACHER_DAILY   = 10;  // teacher daily consistency: ≥4 periods per working day
 
 // ═════════════════════════════════════════════════════════════════════════════
 //  STATE CLASS — mutable with O(1) assign / unassign / constraint checks
@@ -130,6 +132,7 @@ class State {
   venueGrid: Map<string, number>;     // "venueGroupId:d:s" → varIdx
   sdCount: Map<string, number>;       // "divId:subId:d" → count
   tLoad: Map<string, number>;         // teacherId → total assigned slots
+  tDayLoad: Map<string, number>;      // "teacherId:day" → periods on that day
 
   assignedCount: number;
   divisionCTs: Map<string, string>;   // divisionId → classTeacherId cache
@@ -137,7 +140,8 @@ class State {
   constructor(
     vars: Variable[],
     cfg: SolverConfig,
-    lockedSlots?: { teacherId: string; day: number; slot: number }[]
+    lockedSlots?: { teacherId: string; day: number; slot: number }[],
+    lockedVenueSlots?: { venueGroupId: string; day: number; slot: number }[]
   ) {
     this.vars = vars;
     this.cfg  = cfg;
@@ -147,6 +151,7 @@ class State {
     this.venueGrid   = new Map();
     this.sdCount     = new Map();
     this.tLoad       = new Map();
+    this.tDayLoad    = new Map();
     this.assignedCount = 0;
 
     // Cache division CTs
@@ -161,6 +166,13 @@ class State {
     if (lockedSlots) {
       for (const ls of lockedSlots) {
         this.teacherGrid.set(`${ls.teacherId}:${ls.day}:${ls.slot}`, -999);
+      }
+    }
+
+    // Pre-populate locked venue slots so shared resources from locked divisions are blocked
+    if (lockedVenueSlots) {
+      for (const lv of lockedVenueSlots) {
+        this.venueGrid.set(`${lv.venueGroupId}:${lv.day}:${lv.slot}`, -999);
       }
     }
   }
@@ -245,12 +257,17 @@ class State {
     const sdk = `${v.divisionId}:${v.subjectId}:${d}`;
     this.sdCount.set(sdk, (this.sdCount.get(sdk) ?? 0) + 1);
     this.tLoad.set(v.teacherId, (this.tLoad.get(v.teacherId) ?? 0) + v.blockSize);
+    // Track per-day teacher load for daily consistency scoring
+    const tdlKey = `${v.teacherId}:${d}`;
+    this.tDayLoad.set(tdlKey, (this.tDayLoad.get(tdlKey) ?? 0) + v.blockSize);
 
     if (v.coScheduledDivisions) {
       for (const co of v.coScheduledDivisions) {
         const coSdk = `${co.divisionId}:${v.subjectId}:${d}`;
         this.sdCount.set(coSdk, (this.sdCount.get(coSdk) ?? 0) + 1);
         this.tLoad.set(co.teacherId, (this.tLoad.get(co.teacherId) ?? 0) + v.blockSize);
+        const coTdlKey = `${co.teacherId}:${d}`;
+        this.tDayLoad.set(coTdlKey, (this.tDayLoad.get(coTdlKey) ?? 0) + v.blockSize);
       }
     }
 
@@ -288,6 +305,10 @@ class State {
     const c = this.sdCount.get(sdk) ?? 0;
     if (c <= 1) this.sdCount.delete(sdk); else this.sdCount.set(sdk, c - 1);
     this.tLoad.set(v.teacherId, (this.tLoad.get(v.teacherId) ?? 0) - v.blockSize);
+    // Update per-day teacher load
+    const tdlKey = `${v.teacherId}:${a.day}`;
+    const tdlC = this.tDayLoad.get(tdlKey) ?? 0;
+    if (tdlC <= v.blockSize) this.tDayLoad.delete(tdlKey); else this.tDayLoad.set(tdlKey, tdlC - v.blockSize);
 
     if (v.coScheduledDivisions) {
       for (const co of v.coScheduledDivisions) {
@@ -295,6 +316,9 @@ class State {
         const coC = this.sdCount.get(coSdk) ?? 0;
         if (coC <= 1) this.sdCount.delete(coSdk); else this.sdCount.set(coSdk, coC - 1);
         this.tLoad.set(co.teacherId, (this.tLoad.get(co.teacherId) ?? 0) - v.blockSize);
+        const coTdlKey = `${co.teacherId}:${a.day}`;
+        const coTdlC = this.tDayLoad.get(coTdlKey) ?? 0;
+        if (coTdlC <= v.blockSize) this.tDayLoad.delete(coTdlKey); else this.tDayLoad.set(coTdlKey, coTdlC - v.blockSize);
       }
     }
 
@@ -585,7 +609,31 @@ function computeScore(state: State): ScoreBreakdown {
     ? Math.max(0, 1 - hatTrickViolations / (hatTrickSlots * 0.1))
     : 1;
 
-  // ── Weighted total ───────────────────────────────────────────────────────
+  // ── S10: Teacher daily consistency (≥4 periods per working day) ────────────
+  // For each teacher, count days they work. On each working day, check if ≥4 periods.
+  // Score = avg across all teachers of (days with ≥4 / total working days).
+  const teacherWorkingDays = new Map<string, { totalDays: number; goodDays: number }>();
+  for (const [key, load] of state.tDayLoad) {
+    const tid = key.split(':')[0];
+    if (!teacherWorkingDays.has(tid)) {
+      teacherWorkingDays.set(tid, { totalDays: 0, goodDays: 0 });
+    }
+    const entry = teacherWorkingDays.get(tid)!;
+    entry.totalDays++;
+    if (load >= 4) entry.goodDays++;
+  }
+  let dailyConsistencyTotal = 0, dailyConsistencyCount = 0;
+  for (const [, data] of teacherWorkingDays) {
+    if (data.totalDays > 0) {
+      dailyConsistencyTotal += data.goodDays / data.totalDays;
+      dailyConsistencyCount++;
+    }
+  }
+  const teacherDailyScore = dailyConsistencyCount > 0
+    ? dailyConsistencyTotal / dailyConsistencyCount
+    : 1;
+
+  // ── Weighted total ───────────────────────────────────────────────────────────
   const total =
     W_FILL            * fillRate         +
     W_DAY_UNIQUE      * dayUniqueScore   +
@@ -595,7 +643,8 @@ function computeScore(state: State): ScoreBreakdown {
     W_TEACHER_BAL     * balanceScore     +
     W_CT_P1           * ctP1Score        +
     W_CONSECUTIVE     * consScore        +
-    W_NO_TEACHER_HAT  * hatTrickScore;
+    W_NO_TEACHER_HAT  * hatTrickScore    +
+    W_TEACHER_DAILY   * teacherDailyScore;
 
   return {
     total,
@@ -607,6 +656,7 @@ function computeScore(state: State): ScoreBreakdown {
     teacherBalance:        round2(balanceScore * 100),
     classTeacherP1:        round2(ctP1Score * 100),
     consecutiveCompliance: round2(consScore * 100),
+    teacherDailyConsistency: round2(teacherDailyScore * 100),
   };
 }
 
@@ -614,7 +664,7 @@ function emptyScore(): ScoreBreakdown {
   return {
     total: 0, fillRate: 0, subjectDayUniqueness: 100, subjectWeekSpread: 100,
     coreMorning: 100, eveningPriority: 100, teacherBalance: 100,
-    classTeacherP1: 100, consecutiveCompliance: 100,
+    classTeacherP1: 100, consecutiveCompliance: 100, teacherDailyConsistency: 100,
   };
 }
 
@@ -1250,7 +1300,7 @@ export async function solveTimetable(
 
   // ── Phase 2: Initial solution (greedy with MRV) ───────────────────────────
   emit('constraint_propagation', 28, 'Computing initial solution via MRV heuristic…');
-  const state = new State(vars, cfg, input.lockedSlots);
+  const state = new State(vars, cfg, input.lockedSlots, input.lockedVenueSlots);
   buildInitialSolution(state);
 
   const initScore = computeScore(state);
