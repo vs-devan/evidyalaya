@@ -194,38 +194,43 @@ export default function SubstitutePage() {
     // Compute relevance for each free teacher
     return free.map((t: any) => {
       const teacherSubjectIds = (t.subjectMappings || []).map((sm: any) => sm.subjectId);
-      let relevance: 'regular' | 'expert' | 'qualified' | '' = '';
+      let relevance: 'regular' | 'class_teacher' | 'qualified' | '' = '';
       let relevanceDetail = '';
 
-      if (subjectId) {
-        // Check if this teacher regularly teaches this subject in this specific class
-        const teachesInThisClass = timetable.some((e: any) =>
+      // Check if this teacher teaches ANY subject in this specific class
+      const teachesAnySubjectInThisClass = timetable.some((e: any) =>
+        e.teacherId === t.id && e.divisionId === divisionId
+      );
+
+      if (teachesAnySubjectInThisClass) {
+        // Check if this teacher regularly teaches this specific subject in this specific class
+        const teachesThisSubjectInThisClass = timetable.some((e: any) =>
           e.teacherId === t.id && e.subjectId === subjectId && e.divisionId === divisionId
         );
-        if (teachesInThisClass) {
+        if (teachesThisSubjectInThisClass) {
           relevance = 'regular';
           relevanceDetail = 'Regular for this class';
         } else {
-          // Check if this teacher teaches this subject in any other class
-          const teachesElsewhere = timetable.find((e: any) =>
-            e.teacherId === t.id && e.subjectId === subjectId && e.divisionId !== divisionId
-          );
-          if (teachesElsewhere) {
-            const divLabel = teachesElsewhere.division
-              ? `${teachesElsewhere.division?.class?.name || ''}${teachesElsewhere.division?.name || ''}`
-              : '';
-            relevance = 'expert';
-            relevanceDetail = divLabel ? `Teaches in ${divLabel}` : 'Teaches elsewhere';
-          } else if (teacherSubjectIds.includes(subjectId)) {
-            relevance = 'qualified';
-            relevanceDetail = 'Qualified';
-          }
+          // Teaches a different subject in this specific class
+          const subjectsTaught = Array.from(new Set(
+            timetable
+              .filter((e: any) => e.teacherId === t.id && e.divisionId === divisionId)
+              .map((e: any) => e.subject?.code || e.subject?.name)
+              .filter(Boolean)
+          ));
+          relevance = 'class_teacher';
+          relevanceDetail = subjectsTaught.length > 0
+            ? `Teaches ${subjectsTaught.join(', ')} in this class`
+            : 'Teaches in this class';
         }
+      } else if (subjectId && teacherSubjectIds.includes(subjectId)) {
+        relevance = 'qualified';
+        relevanceDetail = 'Qualified';
       }
 
       return { ...t, relevance, relevanceDetail };
     }).sort((a: any, b: any) => {
-      const order = { regular: 0, expert: 1, qualified: 2, '': 3 };
+      const order = { regular: 0, class_teacher: 1, qualified: 2, '': 3 };
       return (order[a.relevance as keyof typeof order] ?? 3) - (order[b.relevance as keyof typeof order] ?? 3);
     });
   }
@@ -426,7 +431,7 @@ export default function SubstitutePage() {
                           const key = `${entry.teacherId}_${slot.slotNumber}_${slot.divisionId}`;
                           const freeTeachers = getFreeTeachers(slot.slotNumber, slot.divisionId, entry.teacherId, slot.subject?.id);
                           const regularCount = freeTeachers.filter((t: any) => t.relevance === 'regular').length;
-                          const expertCount = freeTeachers.filter((t: any) => t.relevance === 'expert').length;
+                          const classTeacherCount = freeTeachers.filter((t: any) => t.relevance === 'class_teacher').length;
                           const qualifiedCount = freeTeachers.filter((t: any) => t.relevance === 'qualified').length;
                           return (
                             <tr key={key}>
@@ -458,7 +463,7 @@ export default function SubstitutePage() {
                                 <div className="sub-relevance-hints">
                                   <span className="form-hint">{freeTeachers.length} available</span>
                                   {regularCount > 0 && <span className="sub-rel-tag regular">{regularCount} regular</span>}
-                                  {expertCount > 0 && <span className="sub-rel-tag expert">{expertCount} subject expert{expertCount !== 1 ? 's' : ''}</span>}
+                                  {classTeacherCount > 0 && <span className="sub-rel-tag class-teacher">{classTeacherCount} in this class</span>}
                                   {qualifiedCount > 0 && <span className="sub-rel-tag qualified">{qualifiedCount} qualified</span>}
                                 </div>
                               </td>
@@ -655,7 +660,7 @@ const substituteStyles = `
   color: #166534;
   border: 1px solid #bbf7d0;
 }
-.sub-rel-tag.expert {
+.sub-rel-tag.class-teacher {
   background: #dbeafe;
   color: #1e40af;
   border: 1px solid #bfdbfe;
